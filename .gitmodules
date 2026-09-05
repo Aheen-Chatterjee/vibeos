@@ -1,0 +1,3 @@
+[submodule "src/VibeOS.App/external/SDL3-CS"]
+	path = src/VibeOS.App/external/SDL3-CS
+	url = https://github.com/flibitijibibo/SDL3-CS.git

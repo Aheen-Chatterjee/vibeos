@@ -19,4 +19,12 @@
     </None>
   </ItemGroup>
 
+  <!-- SDL3-CS is vendored as a submodule and compiled in directly. Exclude the
+       binding generator and the Legacy binding, which duplicates every symbol
+       in SDL3.Core.cs. -->
+  <ItemGroup>
+    <Compile Remove="external\SDL3-CS\GenerateBindings\**" />
+    <Compile Remove="external\SDL3-CS\SDL3\SDL3.Legacy.cs" />
+  </ItemGroup>
+
 </Project>
