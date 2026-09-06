@@ -48,6 +48,13 @@ public sealed class StickyModifiers
         return _latched.ContainsKey(actionId);
     }
 
+    /// <summary>Live latches without clearing (for status display).</summary>
+    public IReadOnlyList<string> PeekAll()
+    {
+        Prune();
+        return _latched.OrderBy(kv => kv.Value).Select(kv => Names[kv.Key]).ToList();
+    }
+
     /// <summary>Takes and clears all live latches, oldest first.</summary>
     public IReadOnlyList<string> TakeAll()
     {

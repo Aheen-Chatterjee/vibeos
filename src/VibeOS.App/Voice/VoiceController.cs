@@ -1,4 +1,5 @@
 using VibeOS.App.Actions;
+using VibeOS.App.Input;
 using VibeOS.Core.Input;
 
 namespace VibeOS.App.Voice;
@@ -54,6 +55,10 @@ public sealed class VoiceController : IDisposable
         get { lock (_gate) return _state != State.Idle; }
     }
 
+    public bool IsModelReady => _transcriber.IsReady;
+
+    public string ModelName => _transcriber.ModelName;
+
     public void PrefetchModel() => _engine.PrefetchModel();
 
     /// <summary>Applies new voice settings when idle, else after the utterance.</summary>
@@ -102,7 +107,7 @@ public sealed class VoiceController : IDisposable
             _pendingSubmit = null;
         }
         _mic.BeginSession();
-        _rumble(0x2000, 0x4000, 80);
+        Haptics.Toggle(_rumble);
         _log("[VibeOS] Voice: recording… (release Y to dictate, B to cancel)");
     }
 
@@ -150,7 +155,7 @@ public sealed class VoiceController : IDisposable
             return;
         }
 
-        _rumble(0x1000, 0x1000, 60);
+        Haptics.Soft(_rumble);
         _log("[VibeOS] Voice: transcribing…");
         _ = RunAsync(audio, prompt, cleanup, submit, cts);
     }
@@ -161,6 +166,7 @@ public sealed class VoiceController : IDisposable
         try
         {
             await _engine.RunAsync(audio, prompt, cleanup, submit, cts.Token);
+            if (!cts.IsCancellationRequested) Haptics.Confirm(_rumble);
         }
         catch (OperationCanceledException) { _log("[VibeOS] Voice: cancelled."); }
         catch (Exception ex) { _log($"[VibeOS] Voice failed: {ex.Message}"); }
@@ -189,7 +195,7 @@ public sealed class VoiceController : IDisposable
         }
         cts?.Cancel();
         cts?.Dispose();
-        _rumble(0x6000, 0x6000, 120);
+        Haptics.Error(_rumble);
         _log("[VibeOS] Voice: cancelled.");
     }
 

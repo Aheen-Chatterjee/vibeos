@@ -47,6 +47,9 @@ public sealed class LocalTranscriber : IDisposable
 
     public string ModelName => _model;
 
+    /// <summary>True once the model is downloaded and resident.</summary>
+    public bool IsReady => _factory is not null;
+
     /// <summary>Downloads (first run) and loads the model. Safe to call often.</summary>
     public async Task EnsureModelAsync(CancellationToken ct = default)
     {

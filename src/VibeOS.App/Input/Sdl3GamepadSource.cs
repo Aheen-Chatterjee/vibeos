@@ -23,6 +23,11 @@ public sealed class Sdl3GamepadSource : IDisposable
 
     public bool IsConnected => _gamepad != IntPtr.Zero;
 
+    private volatile string? _connectedName;
+
+    /// <summary>Pad name, or null when disconnected.</summary>
+    public string? ConnectedName => _connectedName;
+
     public bool Initialize()
     {
         // Keep receiving controller input while VibeOS is not the focused app.
@@ -54,7 +59,8 @@ public sealed class Sdl3GamepadSource : IDisposable
 
             if (_gamepad != IntPtr.Zero)
             {
-                Console.WriteLine($"[VibeOS] Gamepad connected: {SDL_GetGamepadName(_gamepad)}");
+                _connectedName = SDL_GetGamepadName(_gamepad);
+                Console.WriteLine($"[VibeOS] Gamepad connected: {_connectedName}");
                 ConnectionChanged?.Invoke(true);
             }
             else
@@ -84,6 +90,7 @@ public sealed class Sdl3GamepadSource : IDisposable
                     {
                         SDL_CloseGamepad(_gamepad);
                         _gamepad = IntPtr.Zero;
+                        _connectedName = null;
                         Console.WriteLine("[VibeOS] Gamepad disconnected.");
                         ConnectionChanged?.Invoke(false);
                     }
@@ -140,13 +147,13 @@ public sealed class Sdl3GamepadSource : IDisposable
     private static float Normalize01(short raw) => Math.Clamp(raw / (float)AxisMax, 0f, 1f);
 
     /// <summary>
-    /// Subtle haptic tick (PRD §29, §36). Best-effort: pads without rumble
-    /// support report failure, which is silently ignored.
+    /// Rumble (PRD §29, §36). Returns false when the pad reports no support —
+    /// Program logs that once so silent haptics are diagnosable.
     /// </summary>
-    public void Rumble(ushort low, ushort high, uint durationMs)
+    public bool Rumble(ushort low, ushort high, uint durationMs)
     {
-        if (_gamepad != IntPtr.Zero)
-            SDL_RumbleGamepad(_gamepad, low, high, durationMs);
+        if (_gamepad == IntPtr.Zero) return false;
+        return SDL_RumbleGamepad(_gamepad, low, high, durationMs);
     }
 
     public void Dispose()

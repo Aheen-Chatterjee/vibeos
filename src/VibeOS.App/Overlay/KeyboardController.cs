@@ -60,6 +60,7 @@ public sealed class KeyboardController
     private long _lastStickMove;
     private int _lastStickDirX;
     private int _lastStickDirY;
+    private long _lastNavTickAt;
 
     /// <summary>Subtle open/close ticks (PRD §36). Set once at startup.</summary>
     public Action<ushort, ushort, uint>? Rumble { get; set; }
@@ -124,7 +125,7 @@ public sealed class KeyboardController
         _row = 0;
         _col = 0;
         _armedAt = null;
-        Rumble?.Invoke(0x1800, 0x1800, 50);
+        Input.Haptics.Confirm(Rumble);
     }
 
     private void CloseLocked()
@@ -133,7 +134,7 @@ public sealed class KeyboardController
         _open = false;
         _armedAt = null;
         _shift = false;
-        if (wasOpen) Rumble?.Invoke(0x1000, 0x1000, 40);
+        if (wasOpen) Input.Haptics.Soft(Rumble);
     }
 
     private int RowCountLocked() => (_symbols ? SymbolRows.Length : LetterRows.Length) + 1;
@@ -185,6 +186,8 @@ public sealed class KeyboardController
         }
 
         // Vertical moves keep the preferred column; horizontal wraps in-row.
+        var beforeRow = _row;
+        var beforeCol = _col;
         if (dy != 0)
         {
             _row = (_row + dy + RowCountLocked()) % RowCountLocked();
@@ -194,6 +197,12 @@ public sealed class KeyboardController
         {
             var len = RowLengthLocked(_row);
             _col = ((_col + dx) % len + len) % len;
+        }
+
+        if ((_row != beforeRow || _col != beforeCol) && now - _lastNavTickAt >= 60)
+        {
+            _lastNavTickAt = now;
+            Input.Haptics.Tick(Rumble);
         }
     }
 

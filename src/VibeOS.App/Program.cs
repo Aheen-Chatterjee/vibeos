@@ -33,6 +33,7 @@ internal static class Program
     private static MicCapture _mic = null!;
     private static TextInserter _inserter = null!;
     private static Action<ushort, ushort, uint>? _rumble;
+    private static bool _rumbleFailed;
     private static KeyboardController _keyboard = null!;
     private static KeyboardOverlay _keyboardOverlay = null!;
     private static string? _lastApp;
@@ -41,8 +42,70 @@ internal static class Program
     private static SystemState _state = SystemState.Active;
     private static long? _masterArmedAt;
     private static bool _masterLatched;
+    private static Sdl3GamepadSource? _pad;
+    private static Gui.TrayApp? _gui;
+    private static Mutex? _instanceMutex;
 
-    private static int Main()
+    /// <summary>Broadcast for the GUI log view (console always prints too).</summary>
+    public static event Action<string>? LogLine;
+
+    /// <summary>Immutable snapshot for the status window. Cheap; polled at 2 Hz.</summary>
+    public sealed record StatusSnapshot(
+        string State,
+        bool PadConnected,
+        string PadName,
+        string Profile,
+        string Voice,
+        string VoiceModel,
+        bool WheelOpen,
+        bool KeyboardOpen,
+        string Sticky);
+
+    public static StatusSnapshot GetStatus() => new(
+        State: _state.ToString(),
+        PadConnected: _pad?.IsConnected ?? false,
+        PadName: _pad?.ConnectedName ?? "waiting for controller…",
+        Profile: _foreground?.Current.ProcessName is string p && p.Length > 0 ? p : "—",
+        Voice: _voice is null ? "off" : _voice.IsRecording ? "recording" : "idle",
+        VoiceModel: _voice is not null && _voice.IsModelReady ? _voice.ModelName : "loading…",
+        WheelOpen: _wheel?.IsOpen ?? false,
+        KeyboardOpen: _keyboard?.IsOpen ?? false,
+        Sticky: _router is null ? "—" : string.Join("+", _router.LatchedNames()));
+
+    /// <summary>GUI requests (marshalled to the input thread implicitly — all
+    /// operations below are thread-safe by construction).</summary>
+    public static void RequestToggle() => ToggleState();
+
+    public static void RequestReload()
+    {
+        _engine = new ChordEngine(_profiles.Chords);
+        _voice?.UpdateConfig(_profiles.Voice);
+        RefreshWheels(_foreground.Current.ProcessName);
+        Log($"[VibeOS] Bindings reloaded: {_profiles.Chords.Count} chords.");
+    }
+
+    public static void RequestQuit()
+    {
+        PanicRelease("quit from GUI");
+        Environment.Exit(0);
+    }
+
+    public static string ConfigDir => _profiles?.ConfigDirectory ?? string.Empty;
+
+    private static int Main(string[] args)
+    {
+        using (_instanceMutex = new Mutex(true, @"Global\VibeOS-single-instance", out var owned))
+        {
+            if (!owned)
+            {
+                Console.Error.WriteLine("[VibeOS] Another instance is already running.");
+                return 2;
+            }
+            return Run(args);
+        }
+    }
+
+    private static int Run(string[] args)
     {
         _ledger = new SyntheticInputLedger();
         _injector = new SendInputInjector(_ledger);
@@ -70,18 +133,11 @@ internal static class Program
         };
         _router.LatchedChanged += (_, latched) =>
         {
-            // Subtle tick on latch, softer on unlatch (PRD §36).
-            if (_rumble is not null && latched) _rumble(0x1800, 0x1800, 50);
-            else if (_rumble is not null) _rumble(0x1000, 0x1000, 40);
+            if (latched) Input.Haptics.Confirm(_rumble);
+            else Input.Haptics.Soft(_rumble);
             Log(latched ? "[VibeOS] Sticky on — next action consumes it." : "[VibeOS] Sticky off.");
         };
-        _profiles.Reloaded += () =>
-        {
-            _engine = new ChordEngine(_profiles.Chords);
-            _voice?.UpdateConfig(_profiles.Voice);
-            RefreshWheels(_foreground.Current.ProcessName);
-            Log($"[VibeOS] Bindings reloaded: {_profiles.Chords.Count} chords.");
-        };
+        _profiles.Reloaded += RequestReload;
         _wheel = new WheelController();
         _wheel.SetWheels(_profiles.Wheels);
         _wheelOverlay = new RadialWheelOverlay();
@@ -114,17 +170,34 @@ internal static class Program
             Console.Error.WriteLine("[VibeOS] SDL init failed.");
             return 1;
         }
+        _pad = pad;
 
         pad.ConnectionChanged += connected =>
         {
             if (!connected) PanicRelease("controller disconnected");
         };
-        _rumble = (low, high, ms) => pad.Rumble(low, high, ms);
+        _rumble = (low, high, ms) =>
+        {
+            if (!pad.Rumble(low, high, ms) && !_rumbleFailed)
+            {
+                _rumbleFailed = true;
+                Log("[VibeOS] Pad reports no rumble support — haptics will be silent.");
+            }
+        };
         _wheel.Rumble = _rumble;
         _keyboard.Rumble = _rumble;
 
+        // GUI (tray + status window) on its own STA thread.
+        var startHidden = args.Any(a => a.Equals("--tray", StringComparison.OrdinalIgnoreCase) ||
+                                        a.Equals("--minimized", StringComparison.OrdinalIgnoreCase));
+        _gui = new Gui.TrayApp();
+        _gui.Start(startHidden);
+        if (startHidden) Gui.TrayApp.HideConsole();
+
         _pointer.Start();
         PrintBanner();
+        if (!pad.IsConnected)
+            Log("[VibeOS] No controller yet — connect it any time, VibeOS picks it up.");
 
         var previous = ControllerSnapshot.Empty;
 
@@ -239,6 +312,15 @@ internal static class Program
     /// </summary>
     private static void FireChords(ControllerSnapshot current, HoldEdges edges, string? app)
     {
+        // Every executed chord ticks (PRD §36). Wheel slots, voice actions and
+        // keyboard typing carry their own haptics; mouse clicks stay silent.
+        void Fire(ChordDefinition? hit)
+        {
+            if (hit is null) return;
+            DispatchAction(hit.ActionId);
+            Input.Haptics.Tick(_rumble);
+        }
+
         // Press edges — Press-mode chords.
         foreach (var b in edges.Pressed)
         {
@@ -251,11 +333,16 @@ internal static class Program
 
             // Every Y press starts capture; release decides dictate vs tap.
             // RB+Y hold marks submit via the Hold-mode chord below.
+            // (Voice owns Y's haptics, so it dispatches directly.)
             if (b == ButtonId.Y)
+            {
                 _voice?.Press();
+                var yHit = _engine.Resolve(current.Pressed, b, ActivationMode.Press, app);
+                if (yHit is not null) DispatchAction(yHit.ActionId);
+                continue;
+            }
 
-            var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Press, app);
-            if (hit is not null) DispatchAction(hit.ActionId);
+            Fire(_engine.Resolve(current.Pressed, b, ActivationMode.Press, app));
         }
 
         // Release edges — Release-mode chords fire on tap releases only, so
@@ -266,23 +353,14 @@ internal static class Program
                 _voice?.Release(outcome, PromptFor(app), CleanupFor(app));
 
             if (outcome == HoldOutcome.Tap)
-            {
-                var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Release, app);
-                if (hit is not null) DispatchAction(hit.ActionId);
-            }
+                Fire(_engine.Resolve(current.Pressed, b, ActivationMode.Release, app));
             else if (outcome == HoldOutcome.DoubleTap)
-            {
-                var hit = _engine.Resolve(current.Pressed, b, ActivationMode.DoubleTap, app);
-                if (hit is not null) DispatchAction(hit.ActionId);
-            }
+                Fire(_engine.Resolve(current.Pressed, b, ActivationMode.DoubleTap, app));
         }
 
         // Hold crossings — Hold-mode chords.
         foreach (var b in edges.HoldCrossed)
-        {
-            var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Hold, app);
-            if (hit is not null) DispatchAction(hit.ActionId);
-        }
+            Fire(_engine.Resolve(current.Pressed, b, ActivationMode.Hold, app));
     }
 
     /// <summary>
@@ -358,7 +436,11 @@ internal static class Program
             Log($"[VibeOS] Unknown action '{actionId}' — check config.");
     }
 
-    private static void Log(string message) => Console.WriteLine(message);
+    private static void Log(string message)
+    {
+        Console.WriteLine(message);
+        try { LogLine?.Invoke(message); } catch { }
+    }
 
     /// <summary>Finds config/vibeos.jsonc: cwd first (dev loop), then beside the exe.</summary>
     private static string ResolveConfigDir()
@@ -421,7 +503,7 @@ internal static class Program
         PanicRelease("state change");
         _pointer.SetEnabled(_state == SystemState.Active);
         _suppressor?.SetEnabled(_state == SystemState.Active);
-        _rumble?.Invoke(0x3000, 0x3000, 90);
+        Input.Haptics.Toggle(_rumble);
     }
 
     private static void MouseEdge(

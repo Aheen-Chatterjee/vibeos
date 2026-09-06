@@ -23,6 +23,9 @@ public sealed class ProfileManager : IDisposable
 {
     private readonly string _configDir;
     private readonly Action<string> _log;
+
+    /// <summary>Resolved configuration directory (for Open-config).</summary>
+    public string ConfigDirectory => _configDir;
     private readonly FileSystemWatcher? _watcher;
     private readonly System.Threading.Timer _debounce;
     private int _reloadPending;

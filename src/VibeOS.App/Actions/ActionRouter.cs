@@ -100,6 +100,9 @@ public sealed class ActionRouter
     /// <summary>Currently latched sticky modifiers (for status display).</summary>
     public bool IsStickyLatched(string actionId) => _sticky.IsLatched(actionId);
 
+    /// <summary>Display names of live latches, e.g. ["Shift"].</summary>
+    public IReadOnlyList<string> LatchedNames() => _sticky.PeekAll();
+
     /// <summary>Executes a named action or voice stub. Returns false if unknown.</summary>
     public bool Execute(string actionId)
     {
