@@ -61,6 +61,24 @@ public sealed class SendInputInjector
         }
     }
 
+    /// <summary>
+    /// Holds a chord down (modifiers, then key). The matching <see cref="ChordUp"/>
+    /// must follow — or the ledger's <c>ReleaseAll</c> on suspend/disconnect —
+    /// so nothing sticks (PRD §47). Used by the voice PTT bridge (PRD §25),
+    /// which needs down and up as separate events.
+    /// </summary>
+    public void ChordDown(IReadOnlyList<VirtualKey> modifiers, VirtualKey key)
+    {
+        for (var i = 0; i < modifiers.Count; i++) KeyDown(modifiers[i]);
+        if (key != VirtualKey.None) KeyDown(key);
+    }
+
+    public void ChordUp(IReadOnlyList<VirtualKey> modifiers, VirtualKey key)
+    {
+        if (key != VirtualKey.None) KeyUp(key);
+        for (var i = modifiers.Count - 1; i >= 0; i--) KeyUp(modifiers[i]);
+    }
+
     private static void SendKeyRaw(ushort virtualKey, bool down)
     {
         Send(new INPUT

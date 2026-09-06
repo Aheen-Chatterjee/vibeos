@@ -139,6 +139,16 @@ public sealed class Sdl3GamepadSource : IDisposable
 
     private static float Normalize01(short raw) => Math.Clamp(raw / (float)AxisMax, 0f, 1f);
 
+    /// <summary>
+    /// Subtle haptic tick (PRD §29, §36). Best-effort: pads without rumble
+    /// support report failure, which is silently ignored.
+    /// </summary>
+    public void Rumble(ushort low, ushort high, uint durationMs)
+    {
+        if (_gamepad != IntPtr.Zero)
+            SDL_RumbleGamepad(_gamepad, low, high, durationMs);
+    }
+
     public void Dispose()
     {
         if (_gamepad != IntPtr.Zero)

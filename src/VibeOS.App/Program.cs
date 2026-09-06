@@ -3,6 +3,7 @@ using VibeOS.App.Actions;
 using VibeOS.App.Input;
 using VibeOS.App.Overlay;
 using VibeOS.App.Pointer;
+using VibeOS.App.Voice;
 using VibeOS.App.Profiles;
 using VibeOS.App.Windows;
 using VibeOS.Core;
@@ -28,6 +29,8 @@ internal static class Program
     private static ChordEngine _engine = new(Array.Empty<ChordDefinition>());
     private static WheelController _wheel = null!;
     private static RadialWheelOverlay _wheelOverlay = null!;
+    private static VoiceController? _voice;
+    private static Action<ushort, ushort, uint>? _rumble;
 
     private static SystemState _state = SystemState.Active;
     private static long? _masterArmedAt;
@@ -49,8 +52,12 @@ internal static class Program
         {
             _engine = new ChordEngine(_profiles.Chords);
             _wheel.SetWheels(_profiles.Wheels);
+            _voice?.SetHotkey(_profiles.Voice.Hotkey);
             Log($"[VibeOS] Bindings reloaded: {_profiles.Chords.Count} chords.");
         };
+        _voice = new VoiceController(
+            _injector, _profiles.Voice.Hotkey,
+            (low, high, ms) => _rumble?.Invoke(low, high, ms), Log);
         _wheel = new WheelController();
         _wheel.SetWheels(_profiles.Wheels);
         _wheelOverlay = new RadialWheelOverlay();
@@ -78,6 +85,7 @@ internal static class Program
         {
             if (!connected) PanicRelease("controller disconnected");
         };
+        _rumble = (low, high, ms) => pad.Rumble(low, high, ms);
 
         _pointer.Start();
         PrintBanner();
@@ -141,6 +149,7 @@ internal static class Program
         Console.WriteLine("  LB (hold)   : precision   L3+R3 (1s)  : suspend/resume");
         Console.WriteLine("  LB+X/B/A   : copy/paste/select-all   RB+A/X/B : save/find/quick-open");
         Console.WriteLine("  LB+RB hold : radial wheel            RB+D-pad : prev/next tab");
+        Console.WriteLine("  Y hold     : voice dictate (B cancels) RB+Y hold: voice+submit");
         Console.WriteLine("  A / B      : Enter / Escape          RB+D-pad : prev/next tab");
         Console.WriteLine();
         Console.WriteLine("[VibeOS] Active. Hold L3+R3 for 1s to suspend. Ctrl+C to quit.");
@@ -188,6 +197,18 @@ internal static class Program
         // Press edges — Press-mode chords.
         foreach (var b in edges.Pressed)
         {
+            // B mid-dictation cancels voice instead of escaping (PRD §28).
+            if (b == ButtonId.B && (_voice?.IsRecording ?? false))
+            {
+                _voice?.Cancel();
+                continue;
+            }
+
+            // Plain Y starts PTT at 0 ms (PRD §25). With modifiers held the
+            // Hold-mode voice-submit chord owns the button instead (M5/M8).
+            if (b == ButtonId.Y && current.Pressed.Count == 1)
+                _voice?.Press();
+
             var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Press, app);
             if (hit is not null) DispatchAction(hit.ActionId);
         }
@@ -196,6 +217,9 @@ internal static class Program
         // "LB+Y tap → undo" and "Y hold → voice" can share a button (M5).
         foreach (var (b, outcome) in edges.Released)
         {
+            if (b == ButtonId.Y)
+                _voice?.Release(outcome);
+
             if (outcome == HoldOutcome.Tap)
             {
                 var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Release, app);
@@ -218,6 +242,13 @@ internal static class Program
 
     private static void DispatchAction(string actionId)
     {
+        // M5: voice-submit rides the PTT bridge (event-driven submit needs M8).
+        if (ActionRouter.IsVoiceStub(actionId))
+        {
+            _voice?.EnsureRecording();
+            return;
+        }
+
         if (_profiles.GestureActions.TryGetValue(actionId, out var gesture))
         {
             _router.ExecuteGesture(gesture);
@@ -290,6 +321,7 @@ internal static class Program
         // Suspending must release every synthetic held input immediately (PRD §6).
         PanicRelease("state change");
         _pointer.SetEnabled(_state == SystemState.Active);
+        _rumble?.Invoke(0x3000, 0x3000, 90);
     }
 
     private static void MouseEdge(
@@ -318,5 +350,6 @@ internal static class Program
         _ledger.ReleaseAll();
         _holds.Reset();
         _wheel?.ForceClose();
+        _voice?.ForceStop();
     }
 }

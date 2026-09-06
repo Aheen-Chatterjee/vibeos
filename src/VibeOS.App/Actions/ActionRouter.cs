@@ -83,7 +83,9 @@ public sealed class ActionRouter
     }
 
     public static bool IsBuiltIn(string actionId) =>
-        BuiltIn.ContainsKey(actionId) || LaunchTargets.ContainsKey(actionId);
+        BuiltIn.ContainsKey(actionId) ||
+        LaunchTargets.ContainsKey(actionId) ||
+        string.Equals(actionId, "none", StringComparison.OrdinalIgnoreCase);
 
     public static bool IsVoiceStub(string actionId) =>
         actionId.StartsWith("voice-", StringComparison.OrdinalIgnoreCase);
@@ -91,6 +93,11 @@ public sealed class ActionRouter
     /// <summary>Executes a named action or voice stub. Returns false if unknown.</summary>
     public bool Execute(string actionId)
     {
+        // Explicit swallow for per-app overrides (e.g. XAML apps like Windows
+        // Terminal drive themselves from the pad natively; VibeOS stays out).
+        if (string.Equals(actionId, "none", StringComparison.OrdinalIgnoreCase))
+            return true;
+
         if (_gestures.TryGetValue(actionId, out var gesture))
         {
             ExecuteGesture(gesture);

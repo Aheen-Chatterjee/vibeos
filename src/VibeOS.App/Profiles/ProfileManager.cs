@@ -94,10 +94,12 @@ public sealed class ProfileManager : IDisposable
             }
 
             var wheels = ParseWheels(global, gestures);
+            var voice = ParseVoice(global);
 
             _chords = chords;
             _gestures = gestures;
             _wheels = wheels;
+            _voice = voice;
             _log($"[VibeOS] Config loaded: {chords.Count} bindings, {wheels.Count} wheels.");
             return true;
         }
@@ -218,6 +220,25 @@ public sealed class ProfileManager : IDisposable
         return (actionId, mode);
     }
 
+    private static VoiceConfig ParseVoice(string globalFile)
+    {
+        using var doc = LoadJson(globalFile);
+        if (!doc.RootElement.TryGetProperty("voice", out var voiceProp) ||
+            voiceProp.ValueKind != JsonValueKind.Object)
+        {
+            return VoiceConfig.Default;
+        }
+
+        var hotkeyText = voiceProp.TryGetProperty("hotkey", out var hotkeyProp)
+            ? hotkeyProp.GetString() ?? "CTRL+SHIFT+F11"
+            : "CTRL+SHIFT+F11";
+
+        if (!KeyGesture.TryParse(hotkeyText, out var hotkey, out var error) || hotkey is null)
+            throw new InvalidOperationException($"voice.hotkey: {error}");
+
+        return new VoiceConfig(hotkey);
+    }
+
     private static List<Wheel> ParseWheels(string globalFile, Dictionary<string, KeyGesture> gestures)
     {
         var wheels = new List<Wheel>();
@@ -265,6 +286,11 @@ public sealed class ProfileManager : IDisposable
 
     /// <summary>Radial wheels from the global config (spec §5.9).</summary>
     public IReadOnlyList<Wheel> Wheels => _wheels;
+
+    private VoiceConfig _voice = VoiceConfig.Default;
+
+    /// <summary>Voice bridge settings (PRD §25).</summary>
+    public VoiceConfig Voice => _voice;
 
     /// <summary>Raw gestures materialized at load time, consumed by Program dispatch.</summary>
     public IReadOnlyDictionary<string, KeyGesture> GestureActions => _gestures;
