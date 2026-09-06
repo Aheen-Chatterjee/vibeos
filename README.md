@@ -58,19 +58,32 @@ L3 + R3    → suspend / resume    D-pad → free (per-app)
 
 ---
 
-## Run it
+## Install
 
-**Requirements:** Windows 10/11 · Xbox-compatible controller (XInput) · [.NET 9 SDK](https://dotnet.microsoft.com/download) (build only) · NVIDIA GPU recommended (CPU works, slower) · [Ollama](https://ollama.com) + `ollama pull qwen3:1.7b` for transcript cleanup (optional)
+**Requirements:** Windows 10/11 · Xbox-compatible controller (XInput) · [.NET 9 SDK](https://dotnet.microsoft.com/download) (build only — the installed app itself needs only the .NET 9 runtime) · NVIDIA GPU recommended (CPU works, slower) · [Ollama](https://ollama.com) + `ollama pull qwen3:1.7b` for transcript cleanup (optional)
+
+**Easy path — installer** (Release publish to `%LOCALAPPDATA%\VibeOS` + Desktop shortcut):
 
 ```powershell
-cd D:\SideProjects\ControllerOS\vibeos-app
+git clone --recurse-submodules https://github.com/Aheen-Chatterjee/vibeos.git
+cd vibeos
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+# Start with Windows as well: scripts/install.ps1 -Autostart
+# Remove everything:           scripts/uninstall.ps1
+```
+
+Then launch **VibeOS** from the Desktop icon (starts hidden in the tray). Single instance is enforced, so quit any dev copy first.
+
+**Dev path:**
+
+```powershell
 dotnet build src/VibeOS.App
 dotnet run --project src/VibeOS.App
 # or launch the exe directly:
 # src\VibeOS.App\bin\Debug\net9.0-windows\VibeOS.exe [--tray]
 ```
 
-First voice use downloads `base.en` (~140 MB) to `%LOCALAPPDATA%\VibeOS\models` once. Open the GUI from the tray icon; tick **Start with Windows** for login autostart (single instance is enforced).
+First voice use downloads `base.en` (~140 MB) to `%LOCALAPPDATA%\VibeOS\models` once. Open the GUI from the tray icon; tick **Start with Windows** for login autostart.
 
 ## Configure
 
@@ -80,12 +93,11 @@ First voice use downloads `base.en` (~140 MB) to `%LOCALAPPDATA%\VibeOS\models` 
 | `config/apps/*.jsonc` | Per-app overrides (`chrome`, `msedge`, `code`, `cursor`, `terminal`, `explorer`) |
 | `config/user.jsonc` | GUI-managed overrides (git-ignored) — wins ties, replaces wheels, merges voice |
 
-Chord grammar: `"LB+X"`, trigger last; values accept `"copy"`, `{ "key": "CTRL+P" }`, or `{ "action": "undo", "mode": "Release" }` (modes: Press/Release/Hold/DoubleTap). Run `powershell -NoProfile -File ..\scripts\validate-config.ps1` to lint.
+Chord grammar: `"LB+X"`, trigger last; values accept `"copy"`, `{ "key": "CTRL+P" }`, or `{ "action": "undo", "mode": "Release" }` (modes: Press/Release/Hold/DoubleTap). Run `powershell -NoProfile -File scripts/validate-config.ps1` to lint.
 
 ## Layout
 
 ```
-vibeos-app/
 ├── src/VibeOS.Core/      # pure logic: chords, holds, pointer curve, sticky, radial math (+41 xUnit tests)
 ├── src/VibeOS.App/       # Windows host
 │   ├── Input/            # SDL3 pad source, rumble, haptics, OS key suppression
@@ -97,9 +109,10 @@ vibeos-app/
 │   ├── Voice/            # mic, local STT, cleanup, insertion, dictation engine
 │   └── Gui/              # tray, status window, autostart
 ├── config/               # default configuration
+├── scripts/              # installer, uninstaller, config linter
 └── tests/                # unit tests
 ```
 
 ## Status
 
-M1 (input router) · M2 (mouse) · M4 (shortcuts) · M4.5 (wheel) · M5/M8 (local voice) · M6 (keyboard) · M7 (profiles) · GUI · suppression — **done and hardware-tested.** Deferred to V2: M3 semantic UIA navigation. See `../progress.md` and `../docs/superpowers/` for the full record.
+M1 (input router) · M2 (mouse) · M4 (shortcuts) · M4.5 (wheel) · M5/M8 (local voice) · M6 (keyboard) · M7 (profiles) · GUI · suppression — **done and hardware-tested.** Deferred to V2: M3 semantic UIA navigation.
