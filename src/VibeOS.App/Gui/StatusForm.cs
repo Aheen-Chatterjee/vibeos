@@ -49,6 +49,7 @@ public sealed class StatusForm : Form
     private readonly TabControl _tabs = new();
     private bool _quitting;
     private bool _customizeLoaded;
+    private bool _refreshingControls;
 
     public StatusForm()
     {
@@ -166,7 +167,11 @@ public sealed class StatusForm : Form
         scopeRow.Controls.Add(new Label { Text = "Profile:", AutoSize = true, Padding = new Padding(0, 4, 0, 0) });
         _scopeBox.DropDownStyle = ComboBoxStyle.DropDownList;
         _scopeBox.Width = 220;
-        _scopeBox.SelectedIndexChanged += (_, _) => RefreshControls();
+        _scopeBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_refreshingControls) return;
+            RefreshControls();
+        };
         scopeRow.Controls.Add(_scopeBox);
         top.Controls.Add(scopeRow);
 
@@ -202,6 +207,16 @@ public sealed class StatusForm : Form
     }
 
     private void RefreshControls()
+    {
+        _refreshingControls = true;
+        try
+        {
+            RefreshControlsInner();
+        }
+        finally { _refreshingControls = false; }
+    }
+
+    private void RefreshControlsInner()
     {
         var profiles = Program.Profiles;
         var scopes = new List<string> { "Global" };
