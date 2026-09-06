@@ -1,20 +1,19 @@
-using VibeOS.App.Actions;
-
 namespace VibeOS.App.Profiles;
 
-/// <summary>
-/// Voice bridge settings (PRD §25). The hotkey must match the PTT binding
-/// configured inside OpenWhispr. <see cref="Server"/> is the loopback bridge
-/// URL for dictionary pushes (M7); null leaves dictionaries dormant.
-/// </summary>
-public sealed record VoiceConfig(KeyGesture Hotkey, string? Server = null)
+/// <summary>In-house voice settings (voice plan §9).</summary>
+public sealed record VoiceConfig(
+    string Model,
+    string Language,
+    bool Cleanup,
+    string CleanupModel,
+    int CleanupTimeoutMs,
+    string Ollama)
 {
-    public static VoiceConfig Default { get; } = CreateDefault();
-
-    private static VoiceConfig CreateDefault()
-    {
-        if (!KeyGesture.TryParse("CTRL+SHIFT+F11", out var hotkey, out _) || hotkey is null)
-            throw new InvalidOperationException("Default voice hotkey is invalid.");
-        return new VoiceConfig(hotkey);
-    }
+    public static VoiceConfig Default { get; } = new(
+        Model: "base.en",
+        Language: "en",
+        Cleanup: true,
+        CleanupModel: "qwen3:1.7b",
+        CleanupTimeoutMs: 2500,
+        Ollama: "http://localhost:11434");
 }

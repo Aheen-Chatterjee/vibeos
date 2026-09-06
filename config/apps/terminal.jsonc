@@ -27,5 +27,8 @@
       { "label": "Select all", "action": "select-all" },
       { "label": "Desktop", "action": "show-desktop" }
     ]
+  },
+  "voice": {
+    "mode": "instant"
   }
 }

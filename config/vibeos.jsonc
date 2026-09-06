@@ -14,17 +14,19 @@
   // Hot reload: edit this file while VibeOS runs; malformed edits keep the
   // last-known-good bindings. Per-app overrides live in apps/*.jsonc (M7).
 
-  // Voice (PRD §25–27).
-  // hotkey: MUST match OpenWhispr's dictation key (its .env DICTATION_KEY).
-  //   Y-down synthesizes it at 0 ms (phase 1, always works). If dictation
-  //   stays silent, this is the first thing to check.
-  // server: optional override for the OpenWhispr loopback bridge URL.
-  //   Omit it: VibeOS discovers port+token from ~/.openwhispr/cli-bridge.json
-  //   automatically (VIBEOS_WHISPR_TOKEN env still wins for the token).
-  //   The bridge enables per-profile dictionaries (M7) and event-driven
-  //   voice+submit (M8, requires the fork — see docs/openwhispr-fork-m8.md).
+  // Voice: in-house GPU dictation (no external backend).
+  // model: tiny.en (fastest) | base.en (default) | small.en (accuracy).
+  //   Downloads once to %LOCALAPPDATA%/VibeOS/models, stays resident on GPU.
+  // cleanup: polished (STT → Ollama cleanup → insert) vs instant raw.
+  //   Requires Ollama running + the cleanup model pulled once:
+  //   ollama pull qwen3:1.7b
   "voice": {
-    "hotkey": "CTRL+Q"
+    "model": "base.en",
+    "language": "en",
+    "cleanup": true,
+    "cleanupModel": "qwen3:1.7b",
+    "cleanupTimeoutMs": 2500,
+    "ollama": "http://localhost:11434"
   },
 
   // NOTE — XAML apps (Windows Terminal, Settings, Store) consume the pad

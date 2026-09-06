@@ -35,5 +35,10 @@
     <Compile Remove="external\SDL3-CS\GenerateBindings\**" />
     <Compile Remove="external\SDL3-CS\SDL3\SDL3.Legacy.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" />
+  </ItemGroup>
 
 </Project>

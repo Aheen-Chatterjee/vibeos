@@ -194,7 +194,18 @@ public sealed class ProfileManager : IDisposable
                 if (e.GetString() is string w && !string.IsNullOrWhiteSpace(w))
                     dictionary.Add(w);
         }
-        return new AppVoiceConfig(submitKey, dictionary);
+
+        var mode = "polished";
+        if (voiceProp.TryGetProperty("mode", out var modeProp) &&
+            modeProp.GetString() is string m && !string.IsNullOrWhiteSpace(m))
+        {
+            if (!m.Equals("polished", StringComparison.OrdinalIgnoreCase) &&
+                !m.Equals("instant", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"{shortName}: voice.mode must be polished or instant");
+            mode = m.ToLowerInvariant();
+        }
+
+        return new AppVoiceConfig(submitKey, dictionary, mode);
     }
 
     private void ParseFile(string file, string? appContext, List<ChordDefinition> chords, Dictionary<string, KeyGesture> gestures)
@@ -287,25 +298,39 @@ public sealed class ProfileManager : IDisposable
 
     private static VoiceConfig ParseVoice(string globalFile)
     {
+        var d = VoiceConfig.Default;
         using var doc = LoadJson(globalFile);
         if (!doc.RootElement.TryGetProperty("voice", out var voiceProp) ||
             voiceProp.ValueKind != JsonValueKind.Object)
         {
-            return VoiceConfig.Default;
+            return d;
         }
 
-        var hotkeyText = voiceProp.TryGetProperty("hotkey", out var hotkeyProp)
-            ? hotkeyProp.GetString() ?? "CTRL+SHIFT+F11"
-            : "CTRL+SHIFT+F11";
+        string Get(string name, string fallback) =>
+            voiceProp.TryGetProperty(name, out var p) && p.GetString() is string s && !string.IsNullOrWhiteSpace(s)
+                ? s : fallback;
 
-        if (!KeyGesture.TryParse(hotkeyText, out var hotkey, out var error) || hotkey is null)
-            throw new InvalidOperationException($"voice.hotkey: {error}");
+        var cleanup = d.Cleanup;
+        if (voiceProp.TryGetProperty("cleanup", out var cleanupProp) &&
+            cleanupProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            cleanup = cleanupProp.GetBoolean();
+        }
 
-        string? server = null;
-        if (voiceProp.TryGetProperty("server", out var serverProp))
-            server = serverProp.GetString();
+        var timeout = d.CleanupTimeoutMs;
+        if (voiceProp.TryGetProperty("cleanupTimeoutMs", out var timeoutProp) &&
+            timeoutProp.TryGetInt32(out var ms) && ms > 0)
+        {
+            timeout = ms;
+        }
 
-        return new VoiceConfig(hotkey, server);
+        return new VoiceConfig(
+            Model: Get("model", d.Model),
+            Language: Get("language", d.Language),
+            Cleanup: cleanup,
+            CleanupModel: Get("cleanupModel", d.CleanupModel),
+            CleanupTimeoutMs: timeout,
+            Ollama: Get("ollama", d.Ollama));
     }
 
     private static List<Wheel> ParseWheels(string globalFile, Dictionary<string, KeyGesture> gestures)

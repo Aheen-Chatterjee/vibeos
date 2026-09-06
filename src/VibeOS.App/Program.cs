@@ -30,11 +30,11 @@ internal static class Program
     private static WheelController _wheel = null!;
     private static RadialWheelOverlay _wheelOverlay = null!;
     private static VoiceController? _voice;
+    private static MicCapture _mic = null!;
+    private static TextInserter _inserter = null!;
     private static Action<ushort, ushort, uint>? _rumble;
     private static KeyboardController _keyboard = null!;
     private static KeyboardOverlay _keyboardOverlay = null!;
-    private static DictionaryClient _dict = null!;
-    private static OpenWhisprIpcClient _ipc = null!;
     private static string? _lastApp;
     private static GamepadKeySuppressor _suppressor = null!;
 
@@ -54,24 +54,22 @@ internal static class Program
         var configDir = ResolveConfigDir();
         _profiles = new ProfileManager(configDir, Log);
         _engine = new ChordEngine(_profiles.Chords);
-        // The bridge provider resolves live on every call (config override,
-        // env token, or OpenWhispr's own cli-bridge.json), so reloads and
-        // OpenWhispr restarts need no client reconstruction.
-        (string? Server, string? Token) Bridge() => WhisprBridge.Resolve(_profiles.Voice.Server);
-        _dict = new DictionaryClient(Bridge, Log);
-        _ipc = new OpenWhisprIpcClient(Bridge, Log);
+        var modelsDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "VibeOS", "models");
+        _mic = new MicCapture(Log);
+        _inserter = new TextInserter(_injector, Log);
+        _voice = new VoiceController(
+            _mic, _inserter, _profiles.Voice, modelsDir,
+            (low, high, ms) => _rumble?.Invoke(low, high, ms), Log);
+        _voice.PrefetchModel();
         _profiles.Reloaded += () =>
         {
             _engine = new ChordEngine(_profiles.Chords);
-            _voice?.SetHotkey(_profiles.Voice.Hotkey);
+            _voice?.UpdateConfig(_profiles.Voice);
             RefreshWheels(_foreground.Current.ProcessName);
-            PushDictionary(_foreground.Current.ProcessName);
             Log($"[VibeOS] Bindings reloaded: {_profiles.Chords.Count} chords.");
         };
-        _voice = new VoiceController(
-            _injector, _profiles.Voice.Hotkey,
-            (low, high, ms) => _rumble?.Invoke(low, high, ms), Log);
-        _voice.SetIpc(_ipc);
         _wheel = new WheelController();
         _wheel.SetWheels(_profiles.Wheels);
         _wheelOverlay = new RadialWheelOverlay();
@@ -85,7 +83,6 @@ internal static class Program
         {
             Log($"[VibeOS] Profile: {app.ProcessName}");
             RefreshWheels(app.ProcessName);
-            PushDictionary(app.ProcessName);
         };
         RefreshWheels(_foreground.Current.ProcessName);
 
@@ -240,9 +237,9 @@ internal static class Program
                 continue;
             }
 
-            // Plain Y starts PTT at 0 ms (PRD §25). With modifiers held the
-            // Hold-mode voice-submit chord owns the button instead (M5/M8).
-            if (b == ButtonId.Y && current.Pressed.Count == 1)
+            // Every Y press starts capture; release decides dictate vs tap.
+            // RB+Y hold marks submit via the Hold-mode chord below.
+            if (b == ButtonId.Y)
                 _voice?.Press();
 
             var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Press, app);
@@ -254,7 +251,7 @@ internal static class Program
         foreach (var (b, outcome) in edges.Released)
         {
             if (b == ButtonId.Y)
-                _voice?.Release(outcome);
+                _voice?.Release(outcome, PromptFor(app), CleanupFor(app));
 
             if (outcome == HoldOutcome.Tap)
             {
@@ -296,7 +293,6 @@ internal static class Program
             : globals);
     }
 
-    /// <summary>Pushes the newly focused app's voice dictionary (M7, PRD §31).</summary>
     /// <summary>
     /// Submit key for voice+submit: per-app override, else Enter (PRD §27).
     /// </summary>
@@ -310,23 +306,32 @@ internal static class Program
         return gesture!;
     }
 
-    /// <summary>Pushes the newly focused app's voice dictionary (M7, PRD §31).</summary>
-    private static void PushDictionary(string processName)
+    /// <summary>Profile dictionary as the whisper prompt (M7).</summary>
+    private static string PromptFor(string? app)
     {
-        var words = _profiles.AppVoice.TryGetValue(processName, out var voice)
-            ? voice.Dictionary
-            : (IReadOnlyList<string>)Array.Empty<string>();
-        _dict.SwitchTo(words);
+        if (app is not null && _profiles.AppVoice.TryGetValue(app, out var voice) &&
+            voice.Dictionary.Count > 0)
+        {
+            return string.Join(", ", voice.Dictionary);
+        }
+        return string.Empty;
+    }
+
+    /// <summary>Cleanup runs unless globally off or the app wants verbatim.</summary>
+    private static bool CleanupFor(string? app)
+    {
+        if (!_profiles.Voice.Cleanup) return false;
+        if (app is not null && _profiles.AppVoice.TryGetValue(app, out var voice))
+            return voice.Polished;
+        return true;
     }
 
     private static void DispatchAction(string actionId)
     {
-        // Voice+submit (PRD §27): IPC when the fork is configured (submit only
-        // on TRANSCRIPT_INSERTED), otherwise the M5 PTT bridge.
+        // RB+Y hold: submit after insert on this utterance (internal event).
         if (ActionRouter.IsVoiceStub(actionId))
         {
-            if (_ipc.IsConfigured) _voice?.SubmitViaIpc(SubmitGesture());
-            else _voice?.EnsureRecording();
+            _voice?.MarkSubmit(SubmitGesture());
             return;
         }
 

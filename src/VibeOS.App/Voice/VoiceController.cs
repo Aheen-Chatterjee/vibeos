@@ -1,48 +1,52 @@
 using VibeOS.App.Actions;
-using VibeOS.App.Windows;
 using VibeOS.Core.Input;
 
 namespace VibeOS.App.Voice;
 
 /// <summary>
-/// Voice input, both phases (PRD §24–28):
-///
-/// Phase 1 (M5, always available): OpenWhispr hotkey bridge (PRD §25).
-/// <code>
-/// Y DOWN → hotkey DOWN at 0 ms (never delayed for tap discrimination)
-/// Y UP   → hotkey UP (a quick tap records ~nothing and is discarded)
-/// B      → cancel the in-flight session if not yet submitted (PRD §28)
-/// </code>
-/// Phase 2 (M8, when the fork's IPC is configured): RB+Y starts an IPC
-/// session; Y release stops dictation; the submit key fires only after the
-/// <c>inserted</c> event — never on a timer (PRD §27).
+/// In-house voice dictation (voice plan §1): every Y press captures, release
+/// transcribes + inserts, RB+Y adds submit on the internal transcript-ready
+/// event, B cancels. No external backend, no IPC, no timers-as-Submit.
 /// </summary>
-public sealed class VoiceController
+public sealed class VoiceController : IDisposable
 {
-    private enum State { Idle, Bridging, Ipc }
+    private enum State { Idle, Capturing, Working }
 
-    private readonly SendInputInjector _injector;
+    private const double MinSeconds = 0.3;
+
+    private readonly MicCapture _mic;
+    private readonly TextInserter _inserter;
+    private readonly Profiles.VoiceConfig _baseConfig;
+    private readonly string _modelsDir;
     private readonly Action<ushort, ushort, uint> _rumble;
     private readonly Action<string> _log;
 
-    private KeyGesture _hotkey;
-    private OpenWhisprIpcClient? _ipc;
     private readonly object _gate = new();
     private State _state = State.Idle;
-    private string? _ipcSession;
-    private CancellationTokenSource? _ipcCts;
-    private bool _earlyRelease;
+    private KeyGesture? _pendingSubmit;
+    private CancellationTokenSource? _cts;
+    private Profiles.VoiceConfig? _pendingConfig;
+    private bool _disposed;
+
+    private DictationEngine _engine;
+    private LocalTranscriber _transcriber;
+    private CleanupClient _cleanup;
 
     public VoiceController(
-        SendInputInjector injector,
-        KeyGesture hotkey,
-        Action<ushort, ushort, uint> rumble,
+        MicCapture mic,
+        TextInserter inserter,
+        Profiles.VoiceConfig config,
+        string modelsDir,
+        Action<ushort,ushort,uint> rumble,
         Action<string> log)
     {
-        _injector = injector;
-        _hotkey = hotkey;
+        _mic = mic;
+        _inserter = inserter;
+        _baseConfig = config;
+        _modelsDir = modelsDir;
         _rumble = rumble;
         _log = log;
+        (_engine, _transcriber, _cleanup) = BuildStack(config);
     }
 
     public bool IsRecording
@@ -50,193 +54,141 @@ public sealed class VoiceController
         get { lock (_gate) return _state != State.Idle; }
     }
 
-    public void SetHotkey(KeyGesture hotkey)
-    {
-        lock (_gate) _hotkey = hotkey;
-    }
+    public void PrefetchModel() => _engine.PrefetchModel();
 
-    public void SetIpc(OpenWhisprIpcClient? ipc)
+    /// <summary>Applies new voice settings when idle, else after the utterance.</summary>
+    public void UpdateConfig(Profiles.VoiceConfig config)
     {
-        lock (_gate) _ipc = ipc;
-    }
-
-    /// <summary>Y pressed with no modifiers: start recording immediately.</summary>
-    public void Press()
-    {
-        KeyGesture hotkey;
         lock (_gate)
         {
-            if (_state != State.Idle) return;
-            _state = State.Bridging;
-            hotkey = _hotkey;
+            if (_disposed) return;
+            if (_state != State.Idle)
+            {
+                _pendingConfig = config;
+                _log("[VibeOS] Voice settings apply after the current utterance.");
+                return;
+            }
+            RebuildLocked(config);
         }
-        _injector.ChordDown(hotkey.Modifiers, hotkey.Key);
+    }
+
+    private (DictationEngine, LocalTranscriber, CleanupClient) BuildStack(Profiles.VoiceConfig cfg)
+    {
+        var transcriber = new LocalTranscriber(_modelsDir, cfg.Model, cfg.Language, _log);
+        var cleanup = new CleanupClient(cfg.Ollama, cfg.CleanupModel, cfg.CleanupTimeoutMs, _log);
+        return (new DictationEngine(_mic, transcriber, cleanup, _inserter, _log), transcriber, cleanup);
+    }
+
+    private void RebuildLocked(Profiles.VoiceConfig cfg)
+    {
+        _transcriber.Dispose();
+        _cleanup.Dispose();
+        (_engine, _transcriber, _cleanup) = BuildStack(cfg);
+        _engine.PrefetchModel();
+    }
+
+    /// <summary>Every Y press starts (or keeps) capture.</summary>
+    public void Press()
+    {
+        lock (_gate)
+        {
+            if (_disposed || _state != State.Idle) return;
+            if (_pendingConfig is not null)
+            {
+                RebuildLocked(_pendingConfig);
+                _pendingConfig = null;
+            }
+            _state = State.Capturing;
+            _pendingSubmit = null;
+        }
+        _mic.BeginSession();
         _rumble(0x2000, 0x4000, 80);
         _log("[VibeOS] Voice: recording… (release Y to dictate, B to cancel)");
     }
 
-    /// <summary>RB+Y hold (or any voice-* action): start if not already going.</summary>
-    public void EnsureRecording()
+    /// <summary>RB+Y hold: submit after insert on this utterance.</summary>
+    public void MarkSubmit(KeyGesture submit)
     {
-        if (!IsRecording) Press();
+        lock (_gate)
+        {
+            if (_state != State.Capturing) return;
+            _pendingSubmit = submit;
+        }
+        _log("[VibeOS] Voice+submit armed.");
     }
 
     /// <summary>
-    /// Voice+submit via IPC (PRD §27). Falls back to the PTT bridge when the
-    /// fork is not configured. The submit key fires only on <c>inserted</c>.
+    /// Y released: taps discard; otherwise transcribe → insert (→ submit).
     /// </summary>
-    public void SubmitViaIpc(KeyGesture submitKey)
+    public void Release(HoldOutcome outcome, string prompt, bool cleanup)
     {
-        OpenWhisprIpcClient? ipc;
+        float[] audio;
+        KeyGesture? submit;
+        CancellationTokenSource? cts = null;
         lock (_gate)
         {
-            if (_state != State.Idle) return;
-            ipc = _ipc;
-        }
+            if (_state != State.Capturing) return;
+            audio = _mic.EndSession();
+            submit = _pendingSubmit;
+            _pendingSubmit = null;
 
-        if (ipc is null || !ipc.IsConfigured)
-        {
-            EnsureRecording();
-            return;
-        }
-
-        var cts = new CancellationTokenSource();
-        lock (_gate)
-        {
-            if (_state != State.Idle) { cts.Dispose(); return; }
-            _state = State.Ipc;
-            _ipcCts = cts;
-        }
-        _rumble(0x2000, 0x4000, 80);
-        _log("[VibeOS] Voice+submit: recording… (release Y, then Enter fires on insert)");
-        _ = RunIpcSessionAsync(ipc, submitKey, cts);
-    }
-
-    private async Task RunIpcSessionAsync(
-        OpenWhisprIpcClient ipc, KeyGesture submitKey, CancellationTokenSource cts)
-    {
-        var session = await ipc.StartDictationAsync(cts.Token);
-        if (session is null)
-        {
-            lock (_gate)
+            if (outcome == HoldOutcome.Tap || audio.Length < 16000 * MinSeconds)
             {
-                if (_ipcCts == cts) { _state = State.Idle; _ipcCts = null; }
-            }
-            cts.Dispose();
-            return;
-        }
-
-        bool releasedEarly;
-        lock (_gate)
-        {
-            _ipcSession = session;
-            releasedEarly = _earlyRelease;
-            _earlyRelease = false;
-        }
-
-        // Y was released while start was in flight: stop now; the insert
-        // event still drives submit, which is exactly the desired semantics.
-        if (releasedEarly)
-            _ = ipc.StopDictationAsync(session);
-
-        await foreach (var (type, _) in ipc.WatchEventsAsync(session, TimeSpan.FromSeconds(60), cts.Token))
-        {
-            if (type == "inserted")
-            {
-                _log("[VibeOS] Voice: transcript inserted — submitting.");
-                if (submitKey.Modifiers.Count == 0) _injector.KeyTap(submitKey.Key);
-                else _injector.SendChord(submitKey.Modifiers, submitKey.Key);
-                _rumble(0x1000, 0x1000, 60);
-            }
-            else if (type == "failed")
-            {
-                _log("[VibeOS] Voice: dictation failed — nothing submitted.");
-                _rumble(0x6000, 0x6000, 120);
-            }
-        }
-
-        lock (_gate)
-        {
-            if (_ipcCts == cts) { _state = State.Idle; _ipcSession = null; _ipcCts = null; }
-        }
-        cts.Dispose();
-    }
-
-    /// <summary>
-    /// Y released: stop the hotkey (bridge), or stop dictation and wait for
-    /// the insert event (IPC). A tap is discarded, never delayed.
-    /// </summary>
-    public void Release(HoldOutcome outcome)
-    {
-        KeyGesture? hotkey = null;
-        OpenWhisprIpcClient? ipc = null;
-        string? session = null;
-        lock (_gate)
-        {
-            if (_state == State.Idle) return;
-            if (_state == State.Ipc)
-            {
-                ipc = _ipc;
-                session = _ipcSession;
-                if (session is null)
-                    _earlyRelease = true; // start still in flight; stop on arrival
+                _state = State.Idle;
             }
             else
             {
-                _state = State.Idle;
-                hotkey = _hotkey;
+                _state = State.Working;
+                _cts = new CancellationTokenSource();
+                cts = _cts;
             }
         }
 
-        if (ipc is not null)
+        if (outcome == HoldOutcome.Tap || audio.Length < 16000 * MinSeconds || cts is null)
         {
-            // The event loop finishes the session (insert → submit).
-            if (session is not null) _ = ipc.StopDictationAsync(session);
-            _log("[VibeOS] Voice: dictating…");
+            _log("[VibeOS] Voice: tap discarded.");
             return;
         }
 
-        if (hotkey is not null)
+        _rumble(0x1000, 0x1000, 60);
+        _log("[VibeOS] Voice: transcribing…");
+        _ = RunAsync(audio, prompt, cleanup, submit, cts);
+    }
+
+    private async Task RunAsync(
+        float[] audio, string prompt, bool cleanup, KeyGesture? submit, CancellationTokenSource cts)
+    {
+        try
         {
-            _injector.ChordUp(hotkey.Modifiers, hotkey.Key);
-            _rumble(0x1000, 0x1000, 60);
+            await _engine.RunAsync(audio, prompt, cleanup, submit, cts.Token);
         }
-        _log(outcome == HoldOutcome.Tap
-            ? "[VibeOS] Voice: tap discarded."
-            : "[VibeOS] Voice: dictating…");
+        catch (OperationCanceledException) { _log("[VibeOS] Voice: cancelled."); }
+        catch (Exception ex) { _log($"[VibeOS] Voice failed: {ex.Message}"); }
+        finally
+        {
+            lock (_gate)
+            {
+                if (_cts == cts) { _state = State.Idle; _cts = null; }
+            }
+            cts.Dispose();
+        }
     }
 
     /// <summary>B pressed mid-dictation: stop before anything is submitted.</summary>
     public void Cancel()
     {
-        KeyGesture? hotkey = null;
-        OpenWhisprIpcClient? ipc = null;
-        string? session = null;
         CancellationTokenSource? cts = null;
         lock (_gate)
         {
-            if (_state == State.Idle) return;
-            if (_state == State.Ipc)
-            {
-                ipc = _ipc;
-                session = _ipcSession;
-                cts = _ipcCts;
-                _state = State.Idle;
-                _ipcSession = null;
-                _ipcCts = null;
-                _earlyRelease = false;
-            }
-            else
-            {
-                _state = State.Idle;
-                hotkey = _hotkey;
-            }
+            if (_state == State.Idle || _disposed) return;
+            if (_state == State.Capturing) _mic.AbandonSession();
+            cts = _cts;
+            _state = State.Idle;
+            _pendingSubmit = null;
+            _cts = null;
         }
-
         cts?.Cancel();
         cts?.Dispose();
-        if (ipc is not null && session is not null) _ = ipc.CancelDictationAsync(session);
-        if (hotkey is not null) _injector.ChordUp(hotkey.Modifiers, hotkey.Key);
         _rumble(0x6000, 0x6000, 120);
         _log("[VibeOS] Voice: cancelled.");
     }
@@ -244,31 +196,28 @@ public sealed class VoiceController
     /// <summary>Unconditional stop: suspend, disconnect, shutdown (PRD §47).</summary>
     public void ForceStop()
     {
-        KeyGesture? hotkey = null;
-        OpenWhisprIpcClient? ipc = null;
-        string? session = null;
         CancellationTokenSource? cts = null;
         lock (_gate)
         {
-            if (_state == State.Ipc)
-            {
-                ipc = _ipc;
-                session = _ipcSession;
-                cts = _ipcCts;
-            }
-            else if (_state == State.Bridging)
-            {
-                hotkey = _hotkey;
-            }
+            if (_state == State.Capturing) _mic.AbandonSession();
+            cts = _cts;
             _state = State.Idle;
-            _ipcSession = null;
-            _ipcCts = null;
-            _earlyRelease = false;
+            _pendingSubmit = null;
+            _cts = null;
         }
-
         cts?.Cancel();
         cts?.Dispose();
-        if (ipc is not null && session is not null) _ = ipc.CancelDictationAsync(session);
-        if (hotkey is not null) _injector.ChordUp(hotkey.Modifiers, hotkey.Key);
+    }
+
+    public void Dispose()
+    {
+        ForceStop();
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+        }
+        _transcriber.Dispose();
+        _cleanup.Dispose();
     }
 }
