@@ -55,6 +55,26 @@ public sealed class VoiceController : IDisposable
         get { lock (_gate) return _state != State.Idle; }
     }
 
+    public bool HasPendingSubmit
+    {
+        get { lock (_gate) return _pendingSubmit is not null; }
+    }
+
+    /// <summary>
+    /// A chord claimed the press (e.g. LB+Y → undo): drop the buffer silently.
+    /// Capture itself is invisible, so starting it was never the conflict.
+    /// </summary>
+    public void Abandon()
+    {
+        lock (_gate)
+        {
+            if (_state != State.Capturing || _disposed) return;
+            _mic.AbandonSession();
+            _state = State.Idle;
+            _pendingSubmit = null;
+        }
+    }
+
     public bool IsModelReady => _transcriber.IsReady;
 
     public string ModelName => _transcriber.ModelName;

@@ -329,9 +329,17 @@ internal static class Program
             DispatchAction(hit.ActionId);
         }
 
+        // While both bumpers are held the pad belongs to the wheel (including
+        // its 150 ms arming window): other triggers stay silent.
+        var wheelOwns = current.IsDown(ButtonId.LB) && current.IsDown(ButtonId.RB);
+
         // Press edges — Press-mode chords.
         foreach (var b in edges.Pressed)
         {
+            // Wheel context: bumpers held means the wheel owns the pad.
+            if (wheelOwns && b != ButtonId.LB && b != ButtonId.RB)
+                continue;
+
             // B mid-dictation cancels voice instead of escaping (PRD §28).
             if (b == ButtonId.B && (_voice?.IsRecording ?? false))
             {
@@ -354,11 +362,19 @@ internal static class Program
         }
 
         // Release edges — Release-mode chords fire on tap releases only, so
-        // "LB+Y tap → undo" and "Y hold → voice" can share a button (M5).
+        // "LB+Y tap → undo" and "Y hold → voice" can share a button.
+        //
+        // No-overlap rule: a matched chord owns the press. Y release first
+        // asks the chord engine — a hit abandons the voice buffer instead of
+        // transcribing it — and a Y released with any other button still held
+        // is chord context, never solo voice. Only a literally-solo Y dictates.
         foreach (var (b, outcome) in edges.Released)
         {
             if (b == ButtonId.Y)
-                _voice?.Release(outcome, PromptFor(app), CleanupFor(app));
+            {
+                ReleaseY(current, outcome, app);
+                continue;
+            }
 
             if (outcome == HoldOutcome.Tap)
                 Fire(_engine.Resolve(current.Pressed, b, ActivationMode.Release, app));
@@ -369,6 +385,52 @@ internal static class Program
         // Hold crossings — Hold-mode chords.
         foreach (var b in edges.HoldCrossed)
             Fire(_engine.Resolve(current.Pressed, b, ActivationMode.Hold, app));
+    }
+
+    private static void ReleaseY(ControllerSnapshot current, HoldOutcome outcome, string? app)
+    {
+        if (_voice is null) return;
+
+        // RB+Y hold armed submit: the release completes dictation.
+        if (_voice.HasPendingSubmit)
+        {
+            _voice.Release(outcome, PromptFor(app), CleanupFor(app));
+            return;
+        }
+
+        // A matched tap/double-tap chord owns the press — abandon the buffer.
+        if (outcome == HoldOutcome.Tap)
+        {
+            var hit = _engine.Resolve(current.Pressed, ButtonId.Y, ActivationMode.Release, app);
+            if (hit is not null)
+            {
+                DispatchAction(hit.ActionId);
+                _voice.Abandon();
+                return;
+            }
+        }
+        else if (outcome == HoldOutcome.DoubleTap)
+        {
+            var hit = _engine.Resolve(current.Pressed, ButtonId.Y, ActivationMode.DoubleTap, app);
+            if (hit is not null)
+            {
+                DispatchAction(hit.ActionId);
+                _voice.Abandon();
+                return;
+            }
+        }
+
+        // Another button still held: chord context, not solo voice.
+        foreach (var held in current.Pressed)
+        {
+            if (held != ButtonId.Y)
+            {
+                _voice.Abandon();
+                return;
+            }
+        }
+
+        _voice.Release(outcome, PromptFor(app), CleanupFor(app));
     }
 
     /// <summary>

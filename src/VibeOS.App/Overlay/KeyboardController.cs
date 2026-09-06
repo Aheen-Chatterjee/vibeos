@@ -96,7 +96,9 @@ public sealed class KeyboardController
         {
             if (!_open)
             {
-                if (!current.IsDown(ButtonId.DpadUp))
+                // Solo DpadUp only: with any other button held this is chord
+                // context (e.g. RB+DpadUp), never a keyboard summon.
+                if (!current.IsDown(ButtonId.DpadUp) || current.Pressed.Count != 1)
                 {
                     _armedAt = null;
                     return;
