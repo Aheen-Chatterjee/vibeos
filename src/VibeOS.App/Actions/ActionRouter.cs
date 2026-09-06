@@ -49,12 +49,20 @@ public sealed class ActionRouter
         ["prev-desktop"] = "WIN+CTRL+LEFT",
         ["next-desktop"] = "WIN+CTRL+RIGHT",
 
-        // Bare keys (base buttons, keyboard overlay reuse)
+        // Bare keys (base buttons, keyboard overlay reuse, nav wheel)
         ["enter"] = "ENTER",
         ["escape"] = "ESCAPE",
         ["tab"] = "TAB",
         ["space"] = "SPACE",
         ["backspace"] = "BACKSPACE",
+        ["up"] = "UP",
+        ["down"] = "DOWN",
+        ["left"] = "LEFT",
+        ["right"] = "RIGHT",
+        ["home"] = "HOME",
+        ["end"] = "END",
+        ["pageup"] = "PAGEUP",
+        ["pagedown"] = "PAGEDOWN",
     };
 
     /// <summary>App-launch actions for wheel slots (spec §5.9).</summary>

@@ -110,6 +110,20 @@
         { "label": "Ctrl", "action": "sticky-ctrl" },
         { "label": "Win", "action": "sticky-win" }
       ]
+    },
+    {
+      // Nav wheel: the navigation cluster.
+      "name": "Nav",
+      "slots": [
+        { "label": "Up", "action": "up" },
+        { "label": "Down", "action": "down" },
+        { "label": "Left", "action": "left" },
+        { "label": "Right", "action": "right" },
+        { "label": "Home", "action": "home" },
+        { "label": "End", "action": "end" },
+        { "label": "PgUp", "action": "pageup" },
+        { "label": "PgDn", "action": "pagedown" }
+      ]
     }
   ]
 }

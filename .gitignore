@@ -3,3 +3,4 @@ obj/
 *.user
 .vs/
 SDL3.dll
+config/user.jsonc

@@ -92,9 +92,12 @@ internal static class Program
 
     public static string ConfigDir => _profiles?.ConfigDirectory ?? string.Empty;
 
+    public static Profiles.ProfileManager Profiles => _profiles;
+
     private static int Main(string[] args)
     {
-        using (_instanceMutex = new Mutex(true, @"Global\VibeOS-single-instance", out var owned))
+        // Local (not Global): same-session single instance without elevation.
+        using (_instanceMutex = new Mutex(true, @"Local\VibeOS-single-instance", out var owned))
         {
             if (!owned)
             {
@@ -216,6 +219,12 @@ internal static class Program
             var edges = TrackHoldEdges(previous, snapshot, now);
             HandleMasterToggle(snapshot, now);
 
+            // Freeze the suppression decision BEFORE the overlays update.
+            // Otherwise a button that closes an overlay (B) would leak its
+            // own edge into FireChords in the same tick (e.g. B closing the
+            // keyboard also fired Escape in the app).
+            var overlayOpen = _wheel.SuppressInput || _keyboard.IsOpen;
+
             string? wheelAction = null;
             if (_state == SystemState.Active)
             {
@@ -235,7 +244,7 @@ internal static class Program
 
             // Overlay precedence (PRD §46): while the wheel or keyboard is
             // open the sticks freeze and chords stay silent.
-            if (_state == SystemState.Active && !_wheel.SuppressInput && !_keyboard.IsOpen)
+            if (_state == SystemState.Active && !overlayOpen)
             {
                 FireChords(snapshot, edges, app);
 

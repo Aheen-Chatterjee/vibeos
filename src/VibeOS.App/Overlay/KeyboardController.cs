@@ -22,8 +22,17 @@ public sealed class KeyboardController
     private const double StickDeadzone = 0.5d;
     private const int StickRepeatMs = 180;
 
-    private static readonly string[] LetterRows = { "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
-    private static readonly string[] ActionRow = { "Space", "Bksp", "Enter", "Sym", "Shift" };
+    private static readonly string[] LetterRows = { "1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM" };
+    private static readonly string[] ActionRow = { "Space", "Bksp", "Enter", "Tab", "Esc", "Sym", "Shift" };
+    private static readonly string[] ArrowRow = { "←", "↑", "↓", "→" };
+
+    private static readonly Dictionary<string, VirtualKey> ArrowKeys = new()
+    {
+        ["←"] = VirtualKey.Left,
+        ["↑"] = VirtualKey.Up,
+        ["↓"] = VirtualKey.Down,
+        ["→"] = VirtualKey.Right,
+    };
 
     private static readonly SymKey[][] SymbolRows =
     {
@@ -48,7 +57,7 @@ public sealed class KeyboardController
             new SymKey("'", VirtualKey.Oem7, false), new SymKey("\"", VirtualKey.Oem7, true),
         },
     };
-    private static readonly string[] SymbolActionRow = { "Space", "Bksp", "Enter", "ABC", "_ " };
+    private static readonly string[] SymbolActionRow = { "Space", "Bksp", "Enter", "Tab", "Esc", "ABC" };
 
     private readonly object _gate = new();
     private long? _armedAt;
@@ -136,14 +145,20 @@ public sealed class KeyboardController
         if (wasOpen) Input.Haptics.Soft(Rumble);
     }
 
-    private int RowCountLocked() => (_symbols ? SymbolRows.Length : LetterRows.Length) + 1;
+    // Content rows + action row + arrows row.
+    private int RowCountLocked() => (_symbols ? SymbolRows.Length : LetterRows.Length) + 2;
 
     private int RowLengthLocked(int row)
     {
         if (!_symbols && row < LetterRows.Length) return LetterRows[row].Length;
         if (_symbols && row < SymbolRows.Length) return SymbolRows[row].Length;
+        if (row == RowCountLocked() - 1) return ArrowRow.Length; // arrows row
         return (_symbols ? SymbolActionRow : ActionRow).Length;
     }
+
+    private bool IsActionRowLocked(int row) => row == RowCountLocked() - 2;
+
+    private bool IsArrowsRowLocked(int row) => row == RowCountLocked() - 1;
 
     private void ClampLocked()
     {
@@ -200,15 +215,23 @@ public sealed class KeyboardController
 
     private void ActivateLocked(SendInputInjector injector)
     {
+        if (IsArrowsRowLocked(_row))
+        {
+            if (ArrowKeys.TryGetValue(ArrowRow[_col], out var arrow))
+                injector.KeyTap(arrow);
+            return;
+        }
+
         var actionRow = _symbols ? SymbolActionRow : ActionRow;
-        var isActionRow = _row == RowCountLocked() - 1;
-        if (isActionRow)
+        if (IsActionRowLocked(_row))
         {
             switch (actionRow[_col])
             {
                 case "Space": injector.KeyTap(VirtualKey.Space); return;
                 case "Bksp": injector.KeyTap(VirtualKey.Back); return;
                 case "Enter": injector.KeyTap(VirtualKey.Enter); return;
+                case "Tab": injector.KeyTap(VirtualKey.Tab); return;
+                case "Esc": injector.KeyTap(VirtualKey.Escape); return;
                 case "Sym": _symbols = true; ClampLocked(); return;
                 case "ABC": _symbols = false; ClampLocked(); return;
                 case "Shift": if (!_symbols) _shift = !_shift; return;
@@ -246,6 +269,7 @@ public sealed class KeyboardController
                 rows.Add(row);
             }
             rows.Add(new List<string>(SymbolActionRow));
+            rows.Add(new List<string>(ArrowRow));
         }
         else
         {
@@ -256,6 +280,7 @@ public sealed class KeyboardController
                 rows.Add(row);
             }
             rows.Add(new List<string>(ActionRow));
+            rows.Add(new List<string>(ArrowRow));
         }
         return rows;
     }
