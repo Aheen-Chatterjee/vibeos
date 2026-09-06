@@ -36,6 +36,7 @@ internal static class Program
     private static DictionaryClient _dict = null!;
     private static OpenWhisprIpcClient _ipc = null!;
     private static string? _lastApp;
+    private static GamepadKeySuppressor _suppressor = null!;
 
     private static SystemState _state = SystemState.Active;
     private static long? _masterArmedAt;
@@ -78,6 +79,8 @@ internal static class Program
         _keyboard = new KeyboardController();
         _keyboardOverlay = new KeyboardOverlay();
         _keyboardOverlay.Start();
+        _suppressor = new GamepadKeySuppressor();
+        _suppressor.Start();
         _foreground.Changed += app =>
         {
             Log($"[VibeOS] Profile: {app.ProcessName}");
@@ -399,6 +402,7 @@ internal static class Program
         // Suspending must release every synthetic held input immediately (PRD §6).
         PanicRelease("state change");
         _pointer.SetEnabled(_state == SystemState.Active);
+        _suppressor?.SetEnabled(_state == SystemState.Active);
         _rumble?.Invoke(0x3000, 0x3000, 90);
     }
 

@@ -1,19 +1,15 @@
 {
   // Windows Terminal profile.
   //
-  // XAML coexistence (2026-09-06 finding): Terminal's UI consumes the pad
-  // natively — Windows translates sticks/buttons into VK_GAMEPAD_* keys and
-  // XAML does its own XY focus navigation + A-invoke. VibeOS bindings for A
-  // and B would double-fire with the native behaviour, so they are swallowed
-  // here ("none") and the pad drives Terminal directly. LB/RB chords have no
-  // native equivalent and keep working through VibeOS.
+  // VibeOS suppresses Windows' VK_GAMEPAD_* translation while Active, so
+  // Terminal's native XAML pad nav never sees the pad and our bindings are
+  // the only effect — no double-drive, no suspend dance. (While Suspended
+  // the pad behaves stock and Terminal drives itself natively.)
   "name": "Terminal",
   "match": {
     "process": ["WindowsTerminal.exe", "wt.exe"]
   },
   "bindings": {
-    "A": "none",
-    "B": "none",
     "RB+A": { "key": "CTRL+SHIFT+T" },
     "RB+DpadRight": "next-tab",
     "RB+DpadLeft": "prev-tab",
