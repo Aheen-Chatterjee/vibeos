@@ -31,6 +31,8 @@ internal static class Program
     private static RadialWheelOverlay _wheelOverlay = null!;
     private static VoiceController? _voice;
     private static Action<ushort, ushort, uint>? _rumble;
+    private static KeyboardController _keyboard = null!;
+    private static KeyboardOverlay _keyboardOverlay = null!;
 
     private static SystemState _state = SystemState.Active;
     private static long? _masterArmedAt;
@@ -62,6 +64,9 @@ internal static class Program
         _wheel.SetWheels(_profiles.Wheels);
         _wheelOverlay = new RadialWheelOverlay();
         _wheelOverlay.Start();
+        _keyboard = new KeyboardController();
+        _keyboardOverlay = new KeyboardOverlay();
+        _keyboardOverlay.Start();
         _foreground.Changed += app => Log($"[VibeOS] Profile: {app.ProcessName}");
 
         // Safety wiring (PRD §47): every path that could strand a held input.
@@ -108,17 +113,24 @@ internal static class Program
 
             string? wheelAction = null;
             if (_state == SystemState.Active)
+            {
                 wheelAction = _wheel.Update(previous, snapshot, now);
+                _keyboard.Update(previous, snapshot, now, _injector);
+            }
             else
+            {
                 _wheel.ForceClose();
+                _keyboard.ForceClose();
+            }
 
             if (wheelAction is not null)
                 DispatchAction(wheelAction);
             _wheelOverlay.Update(_wheel.View);
+            _keyboardOverlay.Update(_keyboard.View);
 
-            // Overlay precedence (PRD §46): while the wheel is open the
-            // sticks freeze and chords stay silent.
-            if (_state == SystemState.Active && !_wheel.SuppressInput)
+            // Overlay precedence (PRD §46): while the wheel or keyboard is
+            // open the sticks freeze and chords stay silent.
+            if (_state == SystemState.Active && !_wheel.SuppressInput && !_keyboard.IsOpen)
             {
                 FireChords(snapshot, edges, app);
 
@@ -150,6 +162,7 @@ internal static class Program
         Console.WriteLine("  LB+X/B/A   : copy/paste/select-all   RB+A/X/B : save/find/quick-open");
         Console.WriteLine("  LB+RB hold : radial wheel            RB+D-pad : prev/next tab");
         Console.WriteLine("  Y hold     : voice dictate (B cancels) RB+Y hold: voice+submit");
+        Console.WriteLine("  D-pad up hold : virtual keyboard");
         Console.WriteLine("  A / B      : Enter / Escape          RB+D-pad : prev/next tab");
         Console.WriteLine();
         Console.WriteLine("[VibeOS] Active. Hold L3+R3 for 1s to suspend. Ctrl+C to quit.");
@@ -350,6 +363,7 @@ internal static class Program
         _ledger.ReleaseAll();
         _holds.Reset();
         _wheel?.ForceClose();
+        _keyboard?.ForceClose();
         _voice?.ForceStop();
     }
 }
