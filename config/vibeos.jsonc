@@ -14,8 +14,13 @@
   // Hot reload: edit this file while VibeOS runs; malformed edits keep the
   // last-known-good bindings. Per-app overrides live in apps/*.jsonc (M7).
 
-  // Voice phase-1 bridge (PRD §25): this hotkey must match the PTT binding
-  // configured inside OpenWhispr. Y-down synthesizes it at 0 ms.
+  // Voice (PRD §25–27).
+  // hotkey: must match the PTT binding configured inside OpenWhispr.
+  //   Y-down synthesizes it at 0 ms (phase 1, always works).
+  // server: OpenWhispr loopback bridge URL (see its "CLI bridge started" log).
+  //   Enables per-profile dictionaries (M7) and event-driven voice+submit
+  //   (M8, requires the fork — see docs/openwhispr-fork-m8.md). Omit to run
+  //   phase-1 only. Bearer token comes from VIBEOS_WHISPR_TOKEN, never here.
   "voice": {
     "hotkey": "CTRL+SHIFT+F11"
   },

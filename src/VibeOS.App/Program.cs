@@ -34,6 +34,8 @@ internal static class Program
     private static KeyboardController _keyboard = null!;
     private static KeyboardOverlay _keyboardOverlay = null!;
     private static DictionaryClient _dict = null!;
+    private static OpenWhisprIpcClient _ipc = null!;
+    private static string? _lastApp;
 
     private static SystemState _state = SystemState.Active;
     private static long? _masterArmedAt;
@@ -52,12 +54,16 @@ internal static class Program
         _profiles = new ProfileManager(configDir, Log);
         _engine = new ChordEngine(_profiles.Chords);
         _dict = new DictionaryClient(_profiles.Voice.Server, Log);
+        _ipc = new OpenWhisprIpcClient(_profiles.Voice.Server, Log);
         _profiles.Reloaded += () =>
         {
             _engine = new ChordEngine(_profiles.Chords);
             _voice?.SetHotkey(_profiles.Voice.Hotkey);
             _dict.Dispose();
             _dict = new DictionaryClient(_profiles.Voice.Server, Log);
+            _ipc.Dispose();
+            _ipc = new OpenWhisprIpcClient(_profiles.Voice.Server, Log);
+            _voice?.SetIpc(_ipc);
             RefreshWheels(_foreground.Current.ProcessName);
             PushDictionary(_foreground.Current.ProcessName);
             Log($"[VibeOS] Bindings reloaded: {_profiles.Chords.Count} chords.");
@@ -65,6 +71,7 @@ internal static class Program
         _voice = new VoiceController(
             _injector, _profiles.Voice.Hotkey,
             (low, high, ms) => _rumble?.Invoke(low, high, ms), Log);
+        _voice.SetIpc(_ipc);
         _wheel = new WheelController();
         _wheel.SetWheels(_profiles.Wheels);
         _wheelOverlay = new RadialWheelOverlay();
@@ -116,6 +123,7 @@ internal static class Program
             _foreground.Poll();
             var app = _foreground.Current.ProcessName;
             if (string.IsNullOrEmpty(app)) app = null;
+            _lastApp = app;
 
             // Hold tracking always runs so HoldDetector never goes stale,
             // even while the wheel owns the buttons.
@@ -285,6 +293,20 @@ internal static class Program
     }
 
     /// <summary>Pushes the newly focused app's voice dictionary (M7, PRD §31).</summary>
+    /// <summary>
+    /// Submit key for voice+submit: per-app override, else Enter (PRD §27).
+    /// </summary>
+    private static KeyGesture SubmitGesture()
+    {
+        string? text = null;
+        if (_lastApp is not null && _profiles.AppVoice.TryGetValue(_lastApp, out var voice))
+            text = voice.SubmitKey;
+        if (!KeyGesture.TryParse(text ?? "ENTER", out var gesture, out _) || gesture is null)
+            KeyGesture.TryParse("ENTER", out gesture, out _);
+        return gesture!;
+    }
+
+    /// <summary>Pushes the newly focused app's voice dictionary (M7, PRD §31).</summary>
     private static void PushDictionary(string processName)
     {
         var words = _profiles.AppVoice.TryGetValue(processName, out var voice)
@@ -295,10 +317,12 @@ internal static class Program
 
     private static void DispatchAction(string actionId)
     {
-        // M5: voice-submit rides the PTT bridge (event-driven submit needs M8).
+        // Voice+submit (PRD §27): IPC when the fork is configured (submit only
+        // on TRANSCRIPT_INSERTED), otherwise the M5 PTT bridge.
         if (ActionRouter.IsVoiceStub(actionId))
         {
-            _voice?.EnsureRecording();
+            if (_ipc.IsConfigured) _voice?.SubmitViaIpc(SubmitGesture());
+            else _voice?.EnsureRecording();
             return;
         }
 
