@@ -34,5 +34,43 @@
     // so A/B are plain bindable actions)
     "A": "enter",
     "B": "escape"
-  }
+  },
+
+  // Radial quick menu (spec §5.9): LB+RB held ~150 ms opens wheel 1.
+  // Right stick aims, D-pad Left/Right cycles wheels, release executes,
+  // B cancels. Slots use the same action ids as bindings.
+  // Wheel 2 ("This app") is per-app and lands in M7; an empty wheel falls
+  // back to wheel 1.
+  "wheels": [
+    {
+      "name": "Apps",
+      "slots": [
+        { "label": "Chrome", "action": "launch-chrome" },
+        { "label": "VS Code", "action": "launch-vscode" },
+        { "label": "Cursor", "action": "launch-cursor" },
+        { "label": "Terminal", "action": "launch-terminal" },
+        { "label": "Explorer", "action": "launch-explorer" },
+        { "label": "Edge", "action": "launch-edge" },
+        { "label": "Task view", "action": "task-switch" },
+        { "label": "Desktop", "action": "show-desktop" }
+      ]
+    },
+    {
+      "name": "This app",
+      "slots": []
+    },
+    {
+      "name": "Edit",
+      "slots": [
+        { "label": "Copy", "action": "copy" },
+        { "label": "Paste", "action": "paste" },
+        { "label": "Select all", "action": "select-all" },
+        { "label": "Undo", "action": "undo" },
+        { "label": "Redo", "action": "redo" },
+        { "label": "Find", "action": "find" },
+        { "label": "Screenshot", "action": "screenshot" },
+        { "label": "Clipboard", "action": "clipboard-history" }
+      ]
+    }
+  ]
 }

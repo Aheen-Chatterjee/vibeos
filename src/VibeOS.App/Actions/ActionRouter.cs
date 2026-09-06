@@ -56,6 +56,17 @@ public sealed class ActionRouter
         ["space"] = "SPACE",
     };
 
+    /// <summary>App-launch actions for wheel slots (spec §5.9).</summary>
+    private static readonly Dictionary<string, string> LaunchTargets = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["launch-chrome"] = "chrome.exe",
+        ["launch-edge"] = "msedge.exe",
+        ["launch-vscode"] = "Code.exe",
+        ["launch-cursor"] = "Cursor.exe",
+        ["launch-terminal"] = "wt.exe",
+        ["launch-explorer"] = "explorer.exe",
+    };
+
     private readonly Dictionary<string, KeyGesture> _gestures;
 
     public ActionRouter(SendInputInjector injector, Action<string> log)
@@ -71,7 +82,8 @@ public sealed class ActionRouter
         }
     }
 
-    public static bool IsBuiltIn(string actionId) => BuiltIn.ContainsKey(actionId);
+    public static bool IsBuiltIn(string actionId) =>
+        BuiltIn.ContainsKey(actionId) || LaunchTargets.ContainsKey(actionId);
 
     public static bool IsVoiceStub(string actionId) =>
         actionId.StartsWith("voice-", StringComparison.OrdinalIgnoreCase);
@@ -82,6 +94,12 @@ public sealed class ActionRouter
         if (_gestures.TryGetValue(actionId, out var gesture))
         {
             ExecuteGesture(gesture);
+            return true;
+        }
+
+        if (LaunchTargets.TryGetValue(actionId, out var exe))
+        {
+            Launch(exe);
             return true;
         }
 
@@ -100,5 +118,21 @@ public sealed class ActionRouter
             _injector.KeyTap(gesture.Key);
         else
             _injector.SendChord(gesture.Modifiers, gesture.Key);
+    }
+
+    private void Launch(string exe)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = exe,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            _log($"[VibeOS] Launch {exe} failed: {ex.Message}");
+        }
     }
 }

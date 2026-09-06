@@ -1,5 +1,6 @@
 using System.Text.Json;
 using VibeOS.App.Actions;
+using VibeOS.App.Overlay;
 using VibeOS.Core.Input;
 
 namespace VibeOS.App.Profiles;
@@ -92,9 +93,12 @@ public sealed class ProfileManager : IDisposable
                     ParseAppFile(file, chords, gestures);
             }
 
+            var wheels = ParseWheels(global, gestures);
+
             _chords = chords;
             _gestures = gestures;
-            _log($"[VibeOS] Config loaded: {chords.Count} bindings.");
+            _wheels = wheels;
+            _log($"[VibeOS] Config loaded: {chords.Count} bindings, {wheels.Count} wheels.");
             return true;
         }
         catch (Exception ex)
@@ -156,61 +160,111 @@ public sealed class ProfileManager : IDisposable
             if (!ChordParser.TryParse(prop.Name, out var modifiers, out var trigger, out var chordError))
                 throw new InvalidOperationException($"{shortName}: binding '{prop.Name}': {chordError}");
 
-            string actionId;
-            var mode = ActivationMode.Press;
-
-            if (prop.Value.ValueKind == JsonValueKind.String)
-            {
-                actionId = prop.Value.GetString()!;
-            }
-            else if (prop.Value.ValueKind == JsonValueKind.Object)
-            {
-                if (prop.Value.TryGetProperty("key", out var keyProp))
-                {
-                    var gestureText = keyProp.GetString()!;
-                    if (!KeyGesture.TryParse(gestureText, out var gesture, out var gestureError) || gesture is null)
-                        throw new InvalidOperationException($"{shortName}: binding '{prop.Name}': {gestureError}");
-                    // Raw gestures become synthetic per-binding actions.
-                    actionId = $"__gesture:{gestureText}";
-                    gestures[actionId] = gesture;
-                }
-                else if (prop.Value.TryGetProperty("action", out var actionProp))
-                {
-                    actionId = actionProp.GetString()!;
-                }
-                else
-                {
-                    throw new InvalidOperationException(
-                        $"{shortName}: binding '{prop.Name}' needs \"key\" or \"action\"");
-                }
-
-                if (prop.Value.TryGetProperty("mode", out var modeProp) &&
-                    !Enum.TryParse<ActivationMode>(modeProp.GetString(), ignoreCase: true, out mode))
-                {
-                    throw new InvalidOperationException(
-                        $"{shortName}: binding '{prop.Name}' has unknown mode '{modeProp.GetString()}'");
-                }
-            }
-            else
-            {
-                throw new InvalidOperationException(
-                    $"{shortName}: binding '{prop.Name}' must be a string or object");
-            }
-
-            if (!ActionRouter.IsBuiltIn(actionId) &&
-                !ActionRouter.IsVoiceStub(actionId) &&
-                !actionId.StartsWith("__gesture:", StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException(
-                    $"{shortName}: binding '{prop.Name}' references unknown action '{actionId}'");
-            }
-
+            var (actionId, mode) = ParseActionValue(prop.Value, gestures, $"{shortName}: binding '{prop.Name}'");
             chords.Add(new ChordDefinition(modifiers, trigger, mode, actionId, appContext));
         }
     }
 
+    /// <summary>Shared value grammar for bindings and wheel slots.</summary>
+    private static (string ActionId, ActivationMode Mode) ParseActionValue(
+        JsonElement value, Dictionary<string, KeyGesture> gestures, string context)
+    {
+        string actionId;
+        var mode = ActivationMode.Press;
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            actionId = value.GetString()!;
+        }
+        else if (value.ValueKind == JsonValueKind.Object)
+        {
+            if (value.TryGetProperty("key", out var keyProp))
+            {
+                var gestureText = keyProp.GetString()!;
+                if (!KeyGesture.TryParse(gestureText, out var gesture, out var gestureError) || gesture is null)
+                    throw new InvalidOperationException($"{context}: {gestureError}");
+                // Raw gestures become synthetic per-binding actions.
+                actionId = $"__gesture:{gestureText}";
+                gestures[actionId] = gesture;
+            }
+            else if (value.TryGetProperty("action", out var actionProp))
+            {
+                actionId = actionProp.GetString()!;
+            }
+            else
+            {
+                throw new InvalidOperationException($"{context} needs \"key\" or \"action\"");
+            }
+
+            if (value.TryGetProperty("mode", out var modeProp) &&
+                !Enum.TryParse<ActivationMode>(modeProp.GetString(), ignoreCase: true, out mode))
+            {
+                throw new InvalidOperationException(
+                    $"{context} has unknown mode '{modeProp.GetString()}'");
+            }
+        }
+        else
+        {
+            throw new InvalidOperationException($"{context} must be a string or object");
+        }
+
+        if (!ActionRouter.IsBuiltIn(actionId) &&
+            !ActionRouter.IsVoiceStub(actionId) &&
+            !actionId.StartsWith("__gesture:", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"{context} references unknown action '{actionId}'");
+        }
+
+        return (actionId, mode);
+    }
+
+    private static List<Wheel> ParseWheels(string globalFile, Dictionary<string, KeyGesture> gestures)
+    {
+        var wheels = new List<Wheel>();
+        using var doc = LoadJson(globalFile);
+
+        if (!doc.RootElement.TryGetProperty("wheels", out var wheelsProp) ||
+            wheelsProp.ValueKind != JsonValueKind.Array)
+        {
+            return wheels;
+        }
+
+        foreach (var wheelProp in wheelsProp.EnumerateArray())
+        {
+            var name = wheelProp.TryGetProperty("name", out var nameProp)
+                ? nameProp.GetString() ?? "Wheel"
+                : "Wheel";
+
+            if (!wheelProp.TryGetProperty("slots", out var slotsProp) ||
+                slotsProp.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidOperationException($"wheel '{name}' needs a slots array");
+            }
+
+            var slots = new List<WheelSlot>();
+            foreach (var slotProp in slotsProp.EnumerateArray())
+            {
+                if (!slotProp.TryGetProperty("label", out var labelProp))
+                    throw new InvalidOperationException($"wheel '{name}' has a slot without a label");
+                var (actionId, _) = ParseActionValue(slotProp, gestures, $"wheel '{name}' slot '{labelProp.GetString()}'");
+                slots.Add(new WheelSlot(labelProp.GetString()!, actionId));
+            }
+
+            // Wheel slots carry label+action in one object; ParseActionValue
+            // reads "key"/"action" members and ignores "label"/"mode".
+            wheels.Add(new Wheel(name, slots));
+        }
+
+        return wheels;
+    }
+
     private Dictionary<string, KeyGesture> _gestures =
         new(StringComparer.OrdinalIgnoreCase);
+
+    private IReadOnlyList<Wheel> _wheels = Array.Empty<Wheel>();
+
+    /// <summary>Radial wheels from the global config (spec §5.9).</summary>
+    public IReadOnlyList<Wheel> Wheels => _wheels;
 
     /// <summary>Raw gestures materialized at load time, consumed by Program dispatch.</summary>
     public IReadOnlyDictionary<string, KeyGesture> GestureActions => _gestures;

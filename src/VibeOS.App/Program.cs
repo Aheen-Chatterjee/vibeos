@@ -1,6 +1,7 @@
 using Microsoft.Win32;
 using VibeOS.App.Actions;
 using VibeOS.App.Input;
+using VibeOS.App.Overlay;
 using VibeOS.App.Pointer;
 using VibeOS.App.Profiles;
 using VibeOS.App.Windows;
@@ -25,6 +26,8 @@ internal static class Program
     private static ActionRouter _router = null!;
     private static ForegroundWatcher _foreground = null!;
     private static ChordEngine _engine = new(Array.Empty<ChordDefinition>());
+    private static WheelController _wheel = null!;
+    private static RadialWheelOverlay _wheelOverlay = null!;
 
     private static SystemState _state = SystemState.Active;
     private static long? _masterArmedAt;
@@ -45,8 +48,13 @@ internal static class Program
         _profiles.Reloaded += () =>
         {
             _engine = new ChordEngine(_profiles.Chords);
+            _wheel.SetWheels(_profiles.Wheels);
             Log($"[VibeOS] Bindings reloaded: {_profiles.Chords.Count} chords.");
         };
+        _wheel = new WheelController();
+        _wheel.SetWheels(_profiles.Wheels);
+        _wheelOverlay = new RadialWheelOverlay();
+        _wheelOverlay.Start();
         _foreground.Changed += app => Log($"[VibeOS] Profile: {app.ProcessName}");
 
         // Safety wiring (PRD §47): every path that could strand a held input.
@@ -85,11 +93,27 @@ internal static class Program
             var app = _foreground.Current.ProcessName;
             if (string.IsNullOrEmpty(app)) app = null;
 
-            DispatchEdges(previous, snapshot, now, app);
+            // Hold tracking always runs so HoldDetector never goes stale,
+            // even while the wheel owns the buttons.
+            var edges = TrackHoldEdges(previous, snapshot, now);
             HandleMasterToggle(snapshot, now);
 
+            string? wheelAction = null;
             if (_state == SystemState.Active)
+                wheelAction = _wheel.Update(previous, snapshot, now);
+            else
+                _wheel.ForceClose();
+
+            if (wheelAction is not null)
+                DispatchAction(wheelAction);
+            _wheelOverlay.Update(_wheel.View);
+
+            // Overlay precedence (PRD §46): while the wheel is open the
+            // sticks freeze and chords stay silent.
+            if (_state == SystemState.Active && !_wheel.SuppressInput)
             {
+                FireChords(snapshot, edges, app);
+
                 // Left stick = cursor, right stick = scroll, both live at once (spec §5.4).
                 _pointer.UpdateInput(
                     cursorStick: snapshot.LeftStick,
@@ -116,9 +140,40 @@ internal static class Program
         Console.WriteLine("  RT          : left click  LT          : right click");
         Console.WriteLine("  LB (hold)   : precision   L3+R3 (1s)  : suspend/resume");
         Console.WriteLine("  LB+X/B/A   : copy/paste/select-all   RB+A/X/B : save/find/quick-open");
+        Console.WriteLine("  LB+RB hold : radial wheel            RB+D-pad : prev/next tab");
         Console.WriteLine("  A / B      : Enter / Escape          RB+D-pad : prev/next tab");
         Console.WriteLine();
         Console.WriteLine("[VibeOS] Active. Hold L3+R3 for 1s to suspend. Ctrl+C to quit.");
+    }
+
+    private sealed record HoldEdges(
+        List<ButtonId> Pressed,
+        List<(ButtonId Button, HoldOutcome Outcome)> Released,
+        List<ButtonId> HoldCrossed);
+
+    /// <summary>
+    /// Feeds the HoldDetector from every poll. Always runs — even suspended or
+    /// while the wheel is open — so timing state never goes stale.
+    /// </summary>
+    private static HoldEdges TrackHoldEdges(
+        ControllerSnapshot previous, ControllerSnapshot current, long now)
+    {
+        var pressed = new List<ButtonId>();
+        foreach (var b in current.Pressed.OrderBy(b => b))
+        {
+            if (previous.IsDown(b)) continue;
+            _holds.Press(b, now);
+            pressed.Add(b);
+        }
+
+        var released = new List<(ButtonId, HoldOutcome)>();
+        foreach (var b in previous.Pressed.OrderBy(b => b))
+        {
+            if (current.IsDown(b)) continue;
+            released.Add((b, _holds.Release(b, now)));
+        }
+
+        return new HoldEdges(pressed, released, new List<ButtonId>(_holds.Poll(now)));
     }
 
     /// <summary>
@@ -128,30 +183,19 @@ internal static class Program
     /// base action leaks before the chord resolves. A press with modifiers held
     /// but no matching chord emits nothing.
     /// </summary>
-    private static void DispatchEdges(
-        ControllerSnapshot previous, ControllerSnapshot current, long now, string? app)
+    private static void FireChords(ControllerSnapshot current, HoldEdges edges, string? app)
     {
-        var active = _state == SystemState.Active;
-
-        // Press edges — Press-mode chords. Deterministic enum order.
-        foreach (var b in current.Pressed.OrderBy(b => b))
+        // Press edges — Press-mode chords.
+        foreach (var b in edges.Pressed)
         {
-            if (previous.IsDown(b)) continue;
-            _holds.Press(b, now);
-            if (!active) continue;
-
             var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Press, app);
             if (hit is not null) DispatchAction(hit.ActionId);
         }
 
         // Release edges — Release-mode chords fire on tap releases only, so
         // "LB+Y tap → undo" and "Y hold → voice" can share a button (M5).
-        foreach (var b in previous.Pressed.OrderBy(b => b))
+        foreach (var (b, outcome) in edges.Released)
         {
-            if (current.IsDown(b)) continue;
-            var outcome = _holds.Release(b, now);
-            if (!active) continue;
-
             if (outcome == HoldOutcome.Tap)
             {
                 var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Release, app);
@@ -165,9 +209,8 @@ internal static class Program
         }
 
         // Hold crossings — Hold-mode chords.
-        foreach (var b in _holds.Poll(now))
+        foreach (var b in edges.HoldCrossed)
         {
-            if (!active) continue;
             var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Hold, app);
             if (hit is not null) DispatchAction(hit.ActionId);
         }
@@ -271,8 +314,9 @@ internal static class Program
         if (hadHeldInput)
             Console.WriteLine($"[VibeOS] Releasing all synthetic input ({reason}).");
 
-        // Both of these must run unconditionally — the log is the only optional part.
+        // All of these must run unconditionally — the log is the only optional part.
         _ledger.ReleaseAll();
         _holds.Reset();
+        _wheel?.ForceClose();
     }
 }
