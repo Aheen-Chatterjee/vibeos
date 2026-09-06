@@ -63,6 +63,18 @@ internal static class Program
             _mic, _inserter, _profiles.Voice, modelsDir,
             (low, high, ms) => _rumble?.Invoke(low, high, ms), Log);
         _voice.PrefetchModel();
+        Actions.ActionHints.Resolver = id =>
+        {
+            if (_profiles.GestureActions.TryGetValue(id, out var gesture)) return gesture;
+            return _router.TryGetGesture(id, out var builtIn) ? builtIn : null;
+        };
+        _router.LatchedChanged += (_, latched) =>
+        {
+            // Subtle tick on latch, softer on unlatch (PRD §36).
+            if (_rumble is not null && latched) _rumble(0x1800, 0x1800, 50);
+            else if (_rumble is not null) _rumble(0x1000, 0x1000, 40);
+            Log(latched ? "[VibeOS] Sticky on — next action consumes it." : "[VibeOS] Sticky off.");
+        };
         _profiles.Reloaded += () =>
         {
             _engine = new ChordEngine(_profiles.Chords);
@@ -288,8 +300,9 @@ internal static class Program
             return;
         }
 
+        // Splice the app wheel into slot 2, keeping every other global wheel.
         _wheel.SetWheels(_profiles.AppWheels.TryGetValue(processName, out var appWheel)
-            ? new[] { globals[0], appWheel, globals[^1] }
+            ? globals.Take(1).Append(appWheel).Concat(globals.Skip(2)).ToList()
             : globals);
     }
 

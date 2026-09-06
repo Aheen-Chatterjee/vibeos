@@ -65,6 +65,7 @@ public sealed class RadialWheelOverlay : IDisposable
 
         private readonly Font _labelFont;
         private readonly Font _titleFont;
+        private readonly Font _hintFont;
 
         public WheelForm()
         {
@@ -77,6 +78,7 @@ public sealed class RadialWheelOverlay : IDisposable
             DoubleBuffered = true;
             _labelFont = new Font("Segoe UI", 13f, FontStyle.Bold, GraphicsUnit.Pixel);
             _titleFont = new Font("Segoe UI", 15f, FontStyle.Bold, GraphicsUnit.Pixel);
+            _hintFont = new Font("Segoe UI", 11f, GraphicsUnit.Pixel);
         }
 
         protected override bool ShowWithoutActivation => true;
@@ -156,7 +158,14 @@ public sealed class RadialWheelOverlay : IDisposable
                 var lx = cx + (float)(Math.Cos(mid) * labelR);
                 var ly = cy + (float)(Math.Sin(mid) * labelR);
                 var size = g.MeasureString(slots[i].Label, _labelFont);
-                g.DrawString(slots[i].Label, _labelFont, Brushes.White, lx - size.Width / 2f, ly - size.Height / 2f);
+                g.DrawString(slots[i].Label, _labelFont, Brushes.White, lx - size.Width / 2f, ly - size.Height / 2f - 8f);
+
+                var badge = Actions.ActionHints.For(slots[i].Action);
+                if (!string.IsNullOrEmpty(badge))
+                {
+                    var badgeSize = g.MeasureString(badge, _hintFont);
+                    g.DrawString(badge, _hintFont, Brushes.LightGray, lx - badgeSize.Width / 2f, ly + size.Height / 2f - 6f);
+                }
             }
 
             // Hub covers the pie centres, leaving a ring.
@@ -179,6 +188,7 @@ public sealed class RadialWheelOverlay : IDisposable
             {
                 _labelFont.Dispose();
                 _titleFont.Dispose();
+                _hintFont.Dispose();
             }
             base.Dispose(disposing);
         }

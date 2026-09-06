@@ -54,6 +54,7 @@ public sealed class ActionRouter
         ["escape"] = "ESCAPE",
         ["tab"] = "TAB",
         ["space"] = "SPACE",
+        ["backspace"] = "BACKSPACE",
     };
 
     /// <summary>App-launch actions for wheel slots (spec §5.9).</summary>
@@ -85,10 +86,19 @@ public sealed class ActionRouter
     public static bool IsBuiltIn(string actionId) =>
         BuiltIn.ContainsKey(actionId) ||
         LaunchTargets.ContainsKey(actionId) ||
+        Core.Input.StickyModifiers.IsStickyAction(actionId) ||
         string.Equals(actionId, "none", StringComparison.OrdinalIgnoreCase);
 
     public static bool IsVoiceStub(string actionId) =>
         actionId.StartsWith("voice-", StringComparison.OrdinalIgnoreCase);
+
+    public bool TryGetGesture(string actionId, out KeyGesture gesture) =>
+        _gestures.TryGetValue(actionId, out gesture!);
+
+    private readonly Core.Input.StickyModifiers _sticky = new();
+
+    /// <summary>Currently latched sticky modifiers (for status display).</summary>
+    public bool IsStickyLatched(string actionId) => _sticky.IsLatched(actionId);
 
     /// <summary>Executes a named action or voice stub. Returns false if unknown.</summary>
     public bool Execute(string actionId)
@@ -97,6 +107,14 @@ public sealed class ActionRouter
         // Terminal drive themselves from the pad natively; VibeOS stays out).
         if (string.Equals(actionId, "none", StringComparison.OrdinalIgnoreCase))
             return true;
+
+        // Sticky modifier toggle (Keys wheel). Returns whether now latched so
+        // the caller can tick/confirm.
+        if (Core.Input.StickyModifiers.IsStickyAction(actionId))
+        {
+            LatchedChanged?.Invoke(actionId, _sticky.Toggle(actionId));
+            return true;
+        }
 
         if (_gestures.TryGetValue(actionId, out var gesture))
         {
@@ -119,27 +137,40 @@ public sealed class ActionRouter
         return false;
     }
 
+    /// <summary>Fired on sticky toggle (action id, now latched).</summary>
+    public event Action<string, bool>? LatchedChanged;
+
     public void ExecuteGesture(KeyGesture gesture)
     {
-        if (gesture.Modifiers.Count == 0)
-            _injector.KeyTap(gesture.Key);
-        else
-            _injector.SendChord(gesture.Modifiers, gesture.Key);
+        // Sticky modifiers (Keys wheel) prepend one-shot, then clear — so
+        // Shift-tap then LB+X yields Shift+Ctrl+X.
+        var latched = _sticky.TakeAll();
+        if (latched.Count == 0)
+        {
+            if (gesture.Modifiers.Count == 0) _injector.KeyTap(gesture.Key);
+            else _injector.SendChord(gesture.Modifiers, gesture.Key);
+            return;
+        }
+
+        var mods = latched.Select(StickyToKey).Concat(gesture.Modifiers).Distinct().ToList();
+        if (gesture.Key == VirtualKey.None && mods.Count > 0)
+        {
+            // No key to carry the latch — re-latch by tapping? No: a bare
+            // sticky with no key is meaningless; drop it loudly.
+            _log($"[VibeOS] Sticky {string.Join("+", latched)} had no key to modify — cleared.");
+            return;
+        }
+        _injector.SendChord(mods, gesture.Key);
     }
 
-    private void Launch(string exe)
+    private static VirtualKey StickyToKey(string actionId) => actionId.ToLowerInvariant() switch
     {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = exe,
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            _log($"[VibeOS] Launch {exe} failed: {ex.Message}");
-        }
-    }
+        "sticky-shift" => VirtualKey.Shift,
+        "sticky-ctrl" => VirtualKey.Control,
+        "sticky-win" => VirtualKey.LWin,
+        "sticky-alt" => VirtualKey.Alt,
+        _ => throw new ArgumentOutOfRangeException(nameof(actionId)),
+    };
+
+    private void Launch(string exe) => Windows.WindowManager.FocusOrLaunch(exe, _log);
 }

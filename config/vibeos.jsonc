@@ -94,6 +94,22 @@
         { "label": "Screenshot", "action": "screenshot" },
         { "label": "Clipboard", "action": "clipboard-history" }
       ]
+    },
+    {
+      // Keys wheel: tap keys fire immediately; Shift/Ctrl/Win latch one-shot
+      // (sticky) — the next chord or slot consumes them combined, then clears.
+      // Re-tap cancels; latches expire after 10 s.
+      "name": "Keys",
+      "slots": [
+        { "label": "Backspace", "action": "backspace" },
+        { "label": "Enter", "action": "enter" },
+        { "label": "Tab", "action": "tab" },
+        { "label": "Esc", "action": "escape" },
+        { "label": "Space", "action": "space" },
+        { "label": "Shift", "action": "sticky-shift" },
+        { "label": "Ctrl", "action": "sticky-ctrl" },
+        { "label": "Win", "action": "sticky-win" }
+      ]
     }
   ]
 }
