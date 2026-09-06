@@ -1,6 +1,8 @@
 using Microsoft.Win32;
+using VibeOS.App.Actions;
 using VibeOS.App.Input;
 using VibeOS.App.Pointer;
+using VibeOS.App.Profiles;
 using VibeOS.App.Windows;
 using VibeOS.Core;
 using VibeOS.Core.Input;
@@ -19,6 +21,10 @@ internal static class Program
     private static SendInputInjector _injector = null!;
     private static PointerEngine _pointer = null!;
     private static HoldDetector _holds = null!;
+    private static ProfileManager _profiles = null!;
+    private static ActionRouter _router = null!;
+    private static ForegroundWatcher _foreground = null!;
+    private static ChordEngine _engine = new(Array.Empty<ChordDefinition>());
 
     private static SystemState _state = SystemState.Active;
     private static long? _masterArmedAt;
@@ -30,6 +36,18 @@ internal static class Program
         _injector = new SendInputInjector(_ledger);
         _pointer = new PointerEngine(_injector, PointerSettings.Default);
         _holds = new HoldDetector(HoldThresholdMs, DoubleTapWindowMs);
+        _router = new ActionRouter(_injector, Log);
+        _foreground = new ForegroundWatcher();
+
+        var configDir = ResolveConfigDir();
+        _profiles = new ProfileManager(configDir, Log);
+        _engine = new ChordEngine(_profiles.Chords);
+        _profiles.Reloaded += () =>
+        {
+            _engine = new ChordEngine(_profiles.Chords);
+            Log($"[VibeOS] Bindings reloaded: {_profiles.Chords.Count} chords.");
+        };
+        _foreground.Changed += app => Log($"[VibeOS] Profile: {app.ProcessName}");
 
         // Safety wiring (PRD §47): every path that could strand a held input.
         AppDomain.CurrentDomain.UnhandledException += (_, _) => PanicRelease("unhandled exception");
@@ -63,7 +81,11 @@ internal static class Program
             var snapshot = pad.Poll();
             var now = snapshot.TimestampMs;
 
-            TrackEdges(previous, snapshot, now);
+            _foreground.Poll();
+            var app = _foreground.Current.ProcessName;
+            if (string.IsNullOrEmpty(app)) app = null;
+
+            DispatchEdges(previous, snapshot, now, app);
             HandleMasterToggle(snapshot, now);
 
             if (_state == SystemState.Active)
@@ -93,20 +115,99 @@ internal static class Program
         Console.WriteLine("  Left stick  : cursor      Right stick : scroll");
         Console.WriteLine("  RT          : left click  LT          : right click");
         Console.WriteLine("  LB (hold)   : precision   L3+R3 (1s)  : suspend/resume");
+        Console.WriteLine("  LB+X/B/A   : copy/paste/select-all   RB+A/X/B : save/find/quick-open");
+        Console.WriteLine("  A / B      : Enter / Escape          RB+D-pad : prev/next tab");
         Console.WriteLine();
         Console.WriteLine("[VibeOS] Active. Hold L3+R3 for 1s to suspend. Ctrl+C to quit.");
     }
 
-    private static void TrackEdges(ControllerSnapshot previous, ControllerSnapshot current, long now)
+    /// <summary>
+    /// Central chord dispatch (PRD §45). Modifiers-first contract: a chord
+    /// fires when its trigger is pressed while the modifiers are already held.
+    /// Resolution happens at trigger time, so nothing double-dispatches and no
+    /// base action leaks before the chord resolves. A press with modifiers held
+    /// but no matching chord emits nothing.
+    /// </summary>
+    private static void DispatchEdges(
+        ControllerSnapshot previous, ControllerSnapshot current, long now, string? app)
     {
-        foreach (var b in current.Pressed)
-            if (!previous.IsDown(b)) _holds.Press(b, now);
+        var active = _state == SystemState.Active;
 
-        foreach (var b in previous.Pressed)
-            if (!current.IsDown(b)) _holds.Release(b, now);
+        // Press edges — Press-mode chords. Deterministic enum order.
+        foreach (var b in current.Pressed.OrderBy(b => b))
+        {
+            if (previous.IsDown(b)) continue;
+            _holds.Press(b, now);
+            if (!active) continue;
 
-        // Drain hold events so HoldDetector state stays current. M4 consumes these.
-        _holds.Poll(now);
+            var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Press, app);
+            if (hit is not null) DispatchAction(hit.ActionId);
+        }
+
+        // Release edges — Release-mode chords fire on tap releases only, so
+        // "LB+Y tap → undo" and "Y hold → voice" can share a button (M5).
+        foreach (var b in previous.Pressed.OrderBy(b => b))
+        {
+            if (current.IsDown(b)) continue;
+            var outcome = _holds.Release(b, now);
+            if (!active) continue;
+
+            if (outcome == HoldOutcome.Tap)
+            {
+                var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Release, app);
+                if (hit is not null) DispatchAction(hit.ActionId);
+            }
+            else if (outcome == HoldOutcome.DoubleTap)
+            {
+                var hit = _engine.Resolve(current.Pressed, b, ActivationMode.DoubleTap, app);
+                if (hit is not null) DispatchAction(hit.ActionId);
+            }
+        }
+
+        // Hold crossings — Hold-mode chords.
+        foreach (var b in _holds.Poll(now))
+        {
+            if (!active) continue;
+            var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Hold, app);
+            if (hit is not null) DispatchAction(hit.ActionId);
+        }
+    }
+
+    private static void DispatchAction(string actionId)
+    {
+        if (_profiles.GestureActions.TryGetValue(actionId, out var gesture))
+        {
+            _router.ExecuteGesture(gesture);
+            return;
+        }
+
+        if (!_router.Execute(actionId))
+            Log($"[VibeOS] Unknown action '{actionId}' — check config.");
+    }
+
+    private static void Log(string message) => Console.WriteLine(message);
+
+    /// <summary>Finds config/vibeos.jsonc: cwd first (dev loop), then beside the exe.</summary>
+    private static string ResolveConfigDir()
+    {
+        var candidates = new List<string>
+        {
+            Path.Combine(Directory.GetCurrentDirectory(), "config"),
+            Path.Combine(AppContext.BaseDirectory, "config"),
+        };
+
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        for (var i = 0; i < 4 && dir?.Parent is not null; i++)
+        {
+            dir = dir.Parent;
+            candidates.Add(Path.Combine(dir.FullName, "config"));
+        }
+
+        foreach (var c in candidates)
+            if (File.Exists(Path.Combine(c, "vibeos.jsonc")))
+                return c;
+
+        return candidates[0];
     }
 
     /// <summary>

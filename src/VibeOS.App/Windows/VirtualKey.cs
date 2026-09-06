@@ -27,6 +27,7 @@ public enum VirtualKey : ushort
     Right = 0x27,
     Down = 0x28,
 
+    Insert = 0x2D,
     Delete = 0x2E,
 
     D0 = 0x30, D1 = 0x31, D2 = 0x32, D3 = 0x33, D4 = 0x34,

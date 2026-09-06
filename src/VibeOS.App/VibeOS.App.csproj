@@ -19,6 +19,15 @@
     </None>
   </ItemGroup>
 
+  <!-- Default configuration ships beside the exe; developers editing
+       vibeos-app/config/*.jsonc get hot reload when running from that dir. -->
+  <ItemGroup>
+    <Content Include="..\..\config\**">
+      <Link>config\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
   <!-- SDL3-CS is vendored as a submodule and compiled in directly. Exclude the
        binding generator and the Legacy binding, which duplicates every symbol
        in SDL3.Core.cs. -->
