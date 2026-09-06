@@ -312,13 +312,12 @@ internal static class Program
     /// </summary>
     private static void FireChords(ControllerSnapshot current, HoldEdges edges, string? app)
     {
-        // Every executed chord ticks (PRD §36). Wheel slots, voice actions and
-        // keyboard typing carry their own haptics; mouse clicks stay silent.
+        // Chords fire silently: per-press buzzing would drown the rare
+        // signals. Only mode flips, overlays, voice and sticky rumble.
         void Fire(ChordDefinition? hit)
         {
             if (hit is null) return;
             DispatchAction(hit.ActionId);
-            Input.Haptics.Tick(_rumble);
         }
 
         // Press edges — Press-mode chords.

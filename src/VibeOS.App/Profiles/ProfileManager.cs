@@ -6,10 +6,13 @@ using VibeOS.Core.Input;
 namespace VibeOS.App.Profiles;
 
 /// <summary>
-/// Loads JSONC configuration (PRD §56–57): a global file plus optional
-/// per-application overrides in an <c>apps/</c> subdirectory. Rebuilds the
-/// chord list consumed by <see cref="ChordEngine"/> and hot-reloads on change,
-/// retaining last-known-good when a file is malformed (spec §8).
+/// Loads JSONC configuration (PRD §56–57): a global file, optional
+/// per-application overrides in an <c>apps/</c> subdirectory, and an optional
+/// <c>user.jsonc</c> override layer (written by the GUI so hand-maintained
+/// files and their comments are never rewritten). User bindings win ties via
+/// priority; user wheels replace the global set; user voice keys merge.
+/// Rebuilds the chord list consumed by <see cref="ChordEngine"/> and
+/// hot-reloads on change, retaining last-known-good on malformed files.
 ///
 /// Binding values accept three forms:
 /// <list type="bullet">
@@ -89,17 +92,40 @@ public sealed class ProfileManager : IDisposable
             var appWheels = new Dictionary<string, Wheel>(StringComparer.OrdinalIgnoreCase);
             var appVoice = new Dictionary<string, AppVoiceConfig>(StringComparer.OrdinalIgnoreCase);
 
-            ParseFile(global, appContext: null, chords, gestures);
+            ParseFile(global, appContext: null, chords, gestures, priority: 0);
 
             var appsDir = Path.Combine(_configDir, "apps");
             if (Directory.Exists(appsDir))
             {
                 foreach (var file in Directory.GetFiles(appsDir, "*.jsonc").OrderBy(f => f))
+                {
+                    if (string.Equals(Path.GetFileName(file), "user.jsonc", StringComparison.OrdinalIgnoreCase))
+                        continue;
                     ParseAppFile(file, chords, gestures, appWheels, appVoice);
+                }
             }
 
             var wheels = ParseWheels(global, gestures);
             var voice = ParseVoice(global);
+
+            // GUI-managed overrides (same grammar as the global file).
+            var user = Path.Combine(_configDir, "user.jsonc");
+            if (File.Exists(user))
+            {
+                using var doc = LoadJson(user);
+                ParseBindings(doc.RootElement, appContext: null, chords, gestures, user, priority: 1);
+                if (doc.RootElement.TryGetProperty("wheels", out var uw) &&
+                    uw.ValueKind == JsonValueKind.Array &&
+                    uw.GetArrayLength() > 0)
+                {
+                    wheels = ParseWheelsFromRoot(doc.RootElement, gestures, "user.jsonc");
+                }
+                if (doc.RootElement.TryGetProperty("voice", out var uv) &&
+                    uv.ValueKind == JsonValueKind.Object)
+                {
+                    voice = OverlayVoice(voice, uv, "user.jsonc");
+                }
+            }
 
             _chords = chords;
             _gestures = gestures;
@@ -211,10 +237,10 @@ public sealed class ProfileManager : IDisposable
         return new AppVoiceConfig(submitKey, dictionary, mode);
     }
 
-    private void ParseFile(string file, string? appContext, List<ChordDefinition> chords, Dictionary<string, KeyGesture> gestures)
+    private void ParseFile(string file, string? appContext, List<ChordDefinition> chords, Dictionary<string, KeyGesture> gestures, int priority = 0)
     {
         using var doc = LoadJson(file);
-        ParseBindings(doc.RootElement, appContext, chords, gestures, file);
+        ParseBindings(doc.RootElement, appContext, chords, gestures, file, priority);
     }
 
     private static JsonDocument LoadJson(string file)
@@ -227,7 +253,7 @@ public sealed class ProfileManager : IDisposable
         });
     }
 
-    private void ParseBindings(JsonElement root, string? appContext, List<ChordDefinition> chords, Dictionary<string, KeyGesture> gestures, string file)
+    private void ParseBindings(JsonElement root, string? appContext, List<ChordDefinition> chords, Dictionary<string, KeyGesture> gestures, string file, int priority = 0)
     {
         if (!root.TryGetProperty("bindings", out var bindings) ||
             bindings.ValueKind != JsonValueKind.Object)
@@ -242,7 +268,7 @@ public sealed class ProfileManager : IDisposable
                 throw new InvalidOperationException($"{shortName}: binding '{prop.Name}': {chordError}");
 
             var (actionId, mode) = ParseActionValue(prop.Value, gestures, $"{shortName}: binding '{prop.Name}'");
-            chords.Add(new ChordDefinition(modifiers, trigger, mode, actionId, appContext));
+            chords.Add(new ChordDefinition(modifiers, trigger, mode, actionId, appContext) { Priority = priority });
         }
     }
 
@@ -338,19 +364,55 @@ public sealed class ProfileManager : IDisposable
 
     private static List<Wheel> ParseWheels(string globalFile, Dictionary<string, KeyGesture> gestures)
     {
-        var wheels = new List<Wheel>();
         using var doc = LoadJson(globalFile);
+        return ParseWheelsFromRoot(doc.RootElement, gestures, "wheel");
+    }
 
-        if (!doc.RootElement.TryGetProperty("wheels", out var wheelsProp) ||
+    private static List<Wheel> ParseWheelsFromRoot(JsonElement root, Dictionary<string, KeyGesture> gestures, string context)
+    {
+        var wheels = new List<Wheel>();
+        if (!root.TryGetProperty("wheels", out var wheelsProp) ||
             wheelsProp.ValueKind != JsonValueKind.Array)
         {
             return wheels;
         }
 
         foreach (var wheelProp in wheelsProp.EnumerateArray())
-            wheels.Add(ParseWheelObject(wheelProp, gestures, "wheel"));
+            wheels.Add(ParseWheelObject(wheelProp, gestures, context));
 
         return wheels;
+    }
+
+    /// <summary>Overlays user voice keys onto the loaded config.</summary>
+    private static VoiceConfig OverlayVoice(VoiceConfig current, JsonElement voiceProp, string context)
+    {
+        string Get(string name, string fallback) =>
+            voiceProp.TryGetProperty(name, out var p) && p.GetString() is string s && !string.IsNullOrWhiteSpace(s)
+                ? s : fallback;
+
+        var cleanup = current.Cleanup;
+        if (voiceProp.TryGetProperty("cleanup", out var cleanupProp) &&
+            cleanupProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            cleanup = cleanupProp.GetBoolean();
+        }
+
+        var timeout = current.CleanupTimeoutMs;
+        if (voiceProp.TryGetProperty("cleanupTimeoutMs", out var timeoutProp) &&
+            timeoutProp.TryGetInt32(out var ms) && ms > 0)
+        {
+            timeout = ms;
+        }
+
+        return current with
+        {
+            Model = Get("model", current.Model),
+            Language = Get("language", current.Language),
+            Cleanup = cleanup,
+            CleanupModel = Get("cleanupModel", current.CleanupModel),
+            CleanupTimeoutMs = timeout,
+            Ollama = Get("ollama", current.Ollama),
+        };
     }
 
     private Dictionary<string, KeyGesture> _gestures =

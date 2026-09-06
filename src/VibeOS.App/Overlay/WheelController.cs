@@ -30,8 +30,6 @@ public sealed class WheelController
     private bool _open;
     private int _wheelIndex;
     private int _highlighted = -1;
-    private int _tickedHighlight = -2;
-    private long _lastTickAt;
 
     /// <summary>
     /// Subtle haptic ticks (PRD §36 — kept quiet: open/execute/cancel only).
@@ -98,26 +96,17 @@ public sealed class WheelController
                 _open = true;
                 _wheelIndex = 0;
                 _highlighted = -1;
-                _tickedHighlight = -2;
                 Input.Haptics.Confirm(Rumble);
                 return null;
             }
 
-            // Open: aim with the right stick.
+            // Open: aim with the right stick. Traversal stays silent —
+            // constant buzzing would drown the rare signals (see Haptics).
             var wheel = EffectiveWheel(_wheels, _wheelIndex);
             var slots = wheel?.Slots.Count ?? 0;
             _highlighted = slots == 0
                 ? -1
                 : RadialSelector.Select(current.RightStick, slots);
-
-            // Traversal tick: each new slot clicks, throttled so a sweep
-            // feels like detents rather than a buzz.
-            if (_highlighted != _tickedHighlight && now - _lastTickAt >= 60)
-            {
-                _tickedHighlight = _highlighted;
-                _lastTickAt = now;
-                Input.Haptics.Tick(Rumble);
-            }
 
             // D-pad cycles wheels on press edges.
             if (IsEdge(previous, current, ButtonId.DpadLeft))
