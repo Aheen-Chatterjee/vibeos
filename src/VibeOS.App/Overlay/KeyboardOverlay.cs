@@ -21,6 +21,9 @@ public sealed class KeyboardOverlay : IDisposable
         _thread = new Thread(() =>
         {
             _form = new KbForm();
+            // Force window-handle creation NOW (see RadialWheelOverlay — the
+            // keyboard silently never rendered for the same reason).
+            _ = _form.Handle;
             _ready.Set();
             Application.Run();
         });

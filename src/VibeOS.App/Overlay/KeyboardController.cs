@@ -61,6 +61,9 @@ public sealed class KeyboardController
     private int _lastStickDirX;
     private int _lastStickDirY;
 
+    /// <summary>Subtle open/close ticks (PRD §36). Set once at startup.</summary>
+    public Action<ushort, ushort, uint>? Rumble { get; set; }
+
     public bool IsOpen
     {
         get { lock (_gate) return _open; }
@@ -121,13 +124,16 @@ public sealed class KeyboardController
         _row = 0;
         _col = 0;
         _armedAt = null;
+        Rumble?.Invoke(0x1800, 0x1800, 50);
     }
 
     private void CloseLocked()
     {
+        var wasOpen = _open;
         _open = false;
         _armedAt = null;
         _shift = false;
+        if (wasOpen) Rumble?.Invoke(0x1000, 0x1000, 40);
     }
 
     private int RowCountLocked() => (_symbols ? SymbolRows.Length : LetterRows.Length) + 1;

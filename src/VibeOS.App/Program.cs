@@ -53,17 +53,16 @@ internal static class Program
         var configDir = ResolveConfigDir();
         _profiles = new ProfileManager(configDir, Log);
         _engine = new ChordEngine(_profiles.Chords);
-        _dict = new DictionaryClient(_profiles.Voice.Server, Log);
-        _ipc = new OpenWhisprIpcClient(_profiles.Voice.Server, Log);
+        // The bridge provider resolves live on every call (config override,
+        // env token, or OpenWhispr's own cli-bridge.json), so reloads and
+        // OpenWhispr restarts need no client reconstruction.
+        (string? Server, string? Token) Bridge() => WhisprBridge.Resolve(_profiles.Voice.Server);
+        _dict = new DictionaryClient(Bridge, Log);
+        _ipc = new OpenWhisprIpcClient(Bridge, Log);
         _profiles.Reloaded += () =>
         {
             _engine = new ChordEngine(_profiles.Chords);
             _voice?.SetHotkey(_profiles.Voice.Hotkey);
-            _dict.Dispose();
-            _dict = new DictionaryClient(_profiles.Voice.Server, Log);
-            _ipc.Dispose();
-            _ipc = new OpenWhisprIpcClient(_profiles.Voice.Server, Log);
-            _voice?.SetIpc(_ipc);
             RefreshWheels(_foreground.Current.ProcessName);
             PushDictionary(_foreground.Current.ProcessName);
             Log($"[VibeOS] Bindings reloaded: {_profiles.Chords.Count} chords.");
@@ -109,6 +108,8 @@ internal static class Program
             if (!connected) PanicRelease("controller disconnected");
         };
         _rumble = (low, high, ms) => pad.Rumble(low, high, ms);
+        _wheel.Rumble = _rumble;
+        _keyboard.Rumble = _rumble;
 
         _pointer.Start();
         PrintBanner();

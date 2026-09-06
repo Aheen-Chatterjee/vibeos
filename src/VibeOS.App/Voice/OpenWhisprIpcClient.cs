@@ -20,34 +20,42 @@ namespace VibeOS.App.Voice;
 public sealed class OpenWhisprIpcClient : IDisposable
 {
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
-    private readonly string? _server;
+    private readonly Func<(string? Server, string? Token)> _bridge;
     private readonly Action<string> _log;
     private bool _disposed;
 
-    public OpenWhisprIpcClient(string? server, Action<string> log)
+    public OpenWhisprIpcClient(Func<(string? Server, string? Token)> bridge, Action<string> log)
     {
-        _server = server?.TrimEnd('/');
+        _bridge = bridge;
         _log = log;
     }
 
-    public bool IsConfigured => !string.IsNullOrEmpty(_server);
-
-    private string? Token => Environment.GetEnvironmentVariable("VIBEOS_WHISPR_TOKEN");
-
-    private HttpRequestMessage Authed(HttpMethod method, string path)
+    public bool IsConfigured
     {
-        var request = new HttpRequestMessage(method, $"{_server}{path}");
-        if (!string.IsNullOrEmpty(Token))
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token);
+        get
+        {
+            var (server, token) = _bridge();
+            return !string.IsNullOrEmpty(server) && !string.IsNullOrEmpty(token);
+        }
+    }
+
+    private HttpRequestMessage? Authed(HttpMethod method, string path)
+    {
+        var (server, token) = _bridge();
+        if (string.IsNullOrEmpty(server) || _disposed) return null;
+        var request = new HttpRequestMessage(method, $"{server}{path}");
+        if (!string.IsNullOrEmpty(token))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return request;
     }
 
     public async Task<string?> StartDictationAsync(CancellationToken ct)
     {
-        if (!IsConfigured || _disposed) return null;
+        if (_disposed) return null;
         try
         {
             using var request = Authed(HttpMethod.Post, "/v1/dictation/start");
+            if (request is null) return null;
             request.Content = JsonContent.Create(new { source = "vibeos" });
             using var response = await _http.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
@@ -65,10 +73,11 @@ public sealed class OpenWhisprIpcClient : IDisposable
 
     public async Task StopDictationAsync(string sessionId)
     {
-        if (!IsConfigured || _disposed) return;
+        if (_disposed) return;
         try
         {
             using var request = Authed(HttpMethod.Post, "/v1/dictation/stop");
+            if (request is null) return;
             request.Content = JsonContent.Create(new { sessionId });
             using var response = await _http.SendAsync(request);
             response.EnsureSuccessStatusCode();
@@ -81,10 +90,11 @@ public sealed class OpenWhisprIpcClient : IDisposable
 
     public async Task CancelDictationAsync(string sessionId)
     {
-        if (!IsConfigured || _disposed) return;
+        if (_disposed) return;
         try
         {
             using var request = Authed(HttpMethod.Post, "/v1/dictation/cancel");
+            if (request is null) return;
             request.Content = JsonContent.Create(new { sessionId });
             using var response = await _http.SendAsync(request);
             response.EnsureSuccessStatusCode();
@@ -104,7 +114,7 @@ public sealed class OpenWhisprIpcClient : IDisposable
         TimeSpan timeout,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        if (!IsConfigured || _disposed) yield break;
+        if (_disposed) yield break;
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(timeout);
@@ -113,6 +123,7 @@ public sealed class OpenWhisprIpcClient : IDisposable
         try
         {
             using var request = Authed(HttpMethod.Get, $"/v1/dictation/events?sessionId={Uri.EscapeDataString(sessionId)}");
+            if (request is null) yield break;
             response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             response.EnsureSuccessStatusCode();
         }

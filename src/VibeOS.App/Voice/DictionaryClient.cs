@@ -20,33 +20,22 @@ namespace VibeOS.App.Voice;
 public sealed class DictionaryClient : IDisposable
 {
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(5) };
-    private readonly string? _server;
+    private readonly Func<(string? Server, string? Token)> _bridge;
     private readonly Action<string> _log;
     private HashSet<string> _lastPushed = new(StringComparer.OrdinalIgnoreCase);
     private bool _misconfigured;
     private bool _disposed;
 
-    public DictionaryClient(string? server, Action<string> log)
+    public DictionaryClient(Func<(string? Server, string? Token)> bridge, Action<string> log)
     {
-        _server = server?.TrimEnd('/');
+        _bridge = bridge;
         _log = log;
     }
-
-    public bool IsConfigured => !string.IsNullOrEmpty(_server);
 
     /// <summary>Fire-and-forget from the profile-switch handler.</summary>
     public void SwitchTo(IReadOnlyList<string> desired)
     {
         if (_disposed) return;
-        if (!IsConfigured)
-        {
-            if (!_misconfigured)
-            {
-                _misconfigured = true;
-                _log("[VibeOS] Voice dictionaries dormant: set voice.server to the OpenWhispr bridge URL.");
-            }
-            return;
-        }
         _ = Task.Run(() => PushAsync(desired));
     }
 
@@ -54,18 +43,18 @@ public sealed class DictionaryClient : IDisposable
     {
         try
         {
-            var token = Environment.GetEnvironmentVariable("VIBEOS_WHISPR_TOKEN");
-            if (string.IsNullOrEmpty(token))
+            var (server, token) = _bridge();
+            if (string.IsNullOrEmpty(server) || string.IsNullOrEmpty(token))
             {
                 if (!_misconfigured)
                 {
                     _misconfigured = true;
-                    _log("[VibeOS] Voice dictionaries dormant: VIBEOS_WHISPR_TOKEN is not set.");
+                    _log("[VibeOS] Voice dictionaries dormant: OpenWhispr bridge not discovered.");
                 }
                 return;
             }
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"{_server}/v1/dictionary/list");
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{server}/v1/dictionary/list");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             using var listResponse = await _http.SendAsync(request);
             listResponse.EnsureSuccessStatusCode();
@@ -83,10 +72,11 @@ public sealed class DictionaryClient : IDisposable
             if (add.Count == 0 && remove.Count == 0)
             {
                 _lastPushed = desiredSet;
+                _misconfigured = false;
                 return;
             }
 
-            using var update = new HttpRequestMessage(HttpMethod.Post, $"{_server}/v1/dictionary/update")
+            using var update = new HttpRequestMessage(HttpMethod.Post, $"{server}/v1/dictionary/update")
             {
                 Content = JsonContent.Create(new { add, remove }),
             };
@@ -95,6 +85,7 @@ public sealed class DictionaryClient : IDisposable
             updateResponse.EnsureSuccessStatusCode();
 
             _lastPushed = desiredSet;
+            _misconfigured = false;
             _log($"[VibeOS] Voice dictionary updated (+{add.Count}/-{remove.Count}).");
         }
         catch (Exception ex)

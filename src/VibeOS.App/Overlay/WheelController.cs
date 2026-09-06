@@ -31,6 +31,12 @@ public sealed class WheelController
     private int _wheelIndex;
     private int _highlighted = -1;
 
+    /// <summary>
+    /// Subtle haptic ticks (PRD §36 — kept quiet: open/execute/cancel only).
+    /// Set once at startup; may be null.
+    /// </summary>
+    public Action<ushort, ushort, uint>? Rumble { get; set; }
+
     public WheelController(int openHoldMs = 150)
     {
         _openHoldMs = openHoldMs;
@@ -90,6 +96,7 @@ public sealed class WheelController
                 _open = true;
                 _wheelIndex = 0;
                 _highlighted = -1;
+                Rumble?.Invoke(0x1800, 0x1800, 50);
                 return null;
             }
 
@@ -111,6 +118,7 @@ public sealed class WheelController
             {
                 _open = false;
                 _highlighted = -1;
+                Rumble?.Invoke(0x1000, 0x1000, 40);
                 return null;
             }
 
@@ -123,6 +131,7 @@ public sealed class WheelController
                 _highlighted = -1;
                 if (wheel is null || (uint)index >= (uint)wheel.Slots.Count)
                     return null;
+                Rumble?.Invoke(0x2800, 0x2800, 70);
                 return wheel.Slots[index].Action;
             }
 

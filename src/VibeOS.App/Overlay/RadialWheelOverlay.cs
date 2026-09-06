@@ -23,6 +23,10 @@ public sealed class RadialWheelOverlay : IDisposable
         _thread = new Thread(() =>
         {
             _form = new WheelForm();
+            // Force window-handle creation NOW. Without this, BeginInvoke from
+            // the input thread throws (handle-less controls cannot marshal),
+            // the exception was swallowed, and the wheel never rendered.
+            _ = _form.Handle;
             _ready.Set();
             Application.Run();
         });
