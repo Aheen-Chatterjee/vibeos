@@ -20,6 +20,62 @@ public sealed class SendInputInjector
         // The ledger asks for a release; emit it WITHOUT re-entering the ledger
         // (it has already cleared its own state by this point).
         _ledger.MouseReleaseRequested += button => SendMouseFlag(UpFlag(button), 0);
+        _ledger.KeyReleaseRequested += vk => SendKeyRaw(vk, down: false);
+    }
+
+    // ---- Keyboard -------------------------------------------------------
+
+    public void KeyDown(VirtualKey key)
+    {
+        _ledger.RegisterKeyDown((ushort)key);
+        SendKeyRaw((ushort)key, down: true);
+    }
+
+    public void KeyUp(VirtualKey key)
+    {
+        _ledger.RegisterKeyUp((ushort)key);
+        SendKeyRaw((ushort)key, down: false);
+    }
+
+    public void KeyTap(VirtualKey key)
+    {
+        KeyDown(key);
+        KeyUp(key);
+    }
+
+    /// <summary>
+    /// Presses modifiers, taps the key, then releases modifiers in reverse
+    /// order. Every press is ledgered, so an exception or a suspend mid-chord
+    /// still releases the modifiers (PRD §47 — no stuck Ctrl).
+    /// </summary>
+    public void SendChord(IReadOnlyList<VirtualKey> modifiers, VirtualKey key)
+    {
+        for (var i = 0; i < modifiers.Count; i++) KeyDown(modifiers[i]);
+        try
+        {
+            if (key != VirtualKey.None) KeyTap(key);
+        }
+        finally
+        {
+            for (var i = modifiers.Count - 1; i >= 0; i--) KeyUp(modifiers[i]);
+        }
+    }
+
+    private static void SendKeyRaw(ushort virtualKey, bool down)
+    {
+        Send(new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT
+                {
+                    wVk = virtualKey,
+                    dwFlags = down ? 0u : KEYEVENTF_KEYUP,
+                    dwExtraInfo = GetMessageExtraInfo()
+                }
+            }
+        });
     }
 
     public void MoveRelative(int dx, int dy)

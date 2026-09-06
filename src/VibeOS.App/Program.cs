@@ -92,9 +92,9 @@ internal static class Program
         Console.WriteLine("=== VibeOS ===");
         Console.WriteLine("  Left stick  : cursor      Right stick : scroll");
         Console.WriteLine("  RT          : left click  LT          : right click");
-        Console.WriteLine("  LB (hold)   : precision   Back+Start  : suspend/resume (1s)");
+        Console.WriteLine("  LB (hold)   : precision   L3+R3 (1s)  : suspend/resume");
         Console.WriteLine();
-        Console.WriteLine("[VibeOS] Active. Ctrl+C to quit.");
+        Console.WriteLine("[VibeOS] Active. Hold L3+R3 for 1s to suspend. Ctrl+C to quit.");
     }
 
     private static void TrackEdges(ControllerSnapshot previous, ControllerSnapshot current, long now)
@@ -110,12 +110,17 @@ internal static class Program
     }
 
     /// <summary>
-    /// Back+Start held together for the master threshold (PRD §6). Latches so a
-    /// continued hold toggles once, not once per second.
+    /// L3+R3 (both stick clicks) held together for the master threshold.
+    /// Latches so a continued hold toggles once, not once per second.
+    ///
+    /// History: this was Back+Start per PRD §6, but the Redgear pad reports
+    /// Back+Start as the Xbox Guide button in firmware, which Windows claims
+    /// for Game Bar / gamepad navigation before SDL ever sees a clean chord.
+    /// L3+R3 is unused in the layout and not intercepted by Windows.
     /// </summary>
     private static void HandleMasterToggle(ControllerSnapshot snapshot, long now)
     {
-        var bothDown = snapshot.IsDown(ButtonId.Back) && snapshot.IsDown(ButtonId.Start);
+        var bothDown = snapshot.IsDown(ButtonId.L3) && snapshot.IsDown(ButtonId.R3);
 
         if (!bothDown)
         {
