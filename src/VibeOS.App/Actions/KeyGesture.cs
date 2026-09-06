@@ -18,6 +18,22 @@ public sealed record KeyGesture(IReadOnlyList<Windows.VirtualKey> Modifiers, Win
         ["WINDOWS"] = Windows.VirtualKey.LWin,
     };
 
+    /// <summary>OEM punctuation reachable as single characters (M7 app profiles).</summary>
+    private static readonly Dictionary<string, Windows.VirtualKey> OemKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["`"] = Windows.VirtualKey.Oem3,
+        ["-"] = Windows.VirtualKey.OemMinus,
+        ["="] = Windows.VirtualKey.OemPlus,
+        ["["] = Windows.VirtualKey.Oem4,
+        ["]"] = Windows.VirtualKey.Oem6,
+        ["\\"] = Windows.VirtualKey.Oem5,
+        [";"] = Windows.VirtualKey.Oem1,
+        ["'"] = Windows.VirtualKey.Oem7,
+        [","] = Windows.VirtualKey.OemComma,
+        ["."] = Windows.VirtualKey.OemPeriod,
+        ["/"] = Windows.VirtualKey.Oem2,
+    };
+
     private static readonly Dictionary<string, Windows.VirtualKey> KeyNames = new(StringComparer.OrdinalIgnoreCase)
     {
         ["ENTER"] = Windows.VirtualKey.Enter,
@@ -74,12 +90,15 @@ public sealed record KeyGesture(IReadOnlyList<Windows.VirtualKey> Modifiers, Win
         if (keyToken.Length == 1)
         {
             var c = char.ToUpperInvariant(keyToken[0]);
-            if ((c < 'A' || c > 'Z') && (c < '0' || c > '9'))
+            if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+            {
+                key = (Windows.VirtualKey)c;
+            }
+            else if (!OemKeys.TryGetValue(keyToken, out key))
             {
                 error = $"unsupported key '{keyToken}' in gesture '{gesture}'";
                 return false;
             }
-            key = (Windows.VirtualKey)c;
         }
         else if (!KeyNames.TryGetValue(keyToken, out key) &&
                  !Enum.TryParse<Windows.VirtualKey>(keyToken, ignoreCase: true, out key))

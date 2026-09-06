@@ -80,9 +80,11 @@ public sealed class ProfileManager : IDisposable
             }
 
             // Build into locals so a failed reload keeps last-known-good for
-            // both the chord list and the gesture table (spec §8).
+            // everything (spec §8).
             var chords = new List<ChordDefinition>();
             var gestures = new Dictionary<string, KeyGesture>(StringComparer.OrdinalIgnoreCase);
+            var appWheels = new Dictionary<string, Wheel>(StringComparer.OrdinalIgnoreCase);
+            var appVoice = new Dictionary<string, AppVoiceConfig>(StringComparer.OrdinalIgnoreCase);
 
             ParseFile(global, appContext: null, chords, gestures);
 
@@ -90,7 +92,7 @@ public sealed class ProfileManager : IDisposable
             if (Directory.Exists(appsDir))
             {
                 foreach (var file in Directory.GetFiles(appsDir, "*.jsonc").OrderBy(f => f))
-                    ParseAppFile(file, chords, gestures);
+                    ParseAppFile(file, chords, gestures, appWheels, appVoice);
             }
 
             var wheels = ParseWheels(global, gestures);
@@ -100,7 +102,9 @@ public sealed class ProfileManager : IDisposable
             _gestures = gestures;
             _wheels = wheels;
             _voice = voice;
-            _log($"[VibeOS] Config loaded: {chords.Count} bindings, {wheels.Count} wheels.");
+            _appWheels = appWheels;
+            _appVoice = appVoice;
+            _log($"[VibeOS] Config loaded: {chords.Count} bindings, {wheels.Count} wheels, {appWheels.Count} app profiles.");
             return true;
         }
         catch (Exception ex)
@@ -110,7 +114,12 @@ public sealed class ProfileManager : IDisposable
         }
     }
 
-    private void ParseAppFile(string file, List<ChordDefinition> chords, Dictionary<string, KeyGesture> gestures)
+    private void ParseAppFile(
+        string file,
+        List<ChordDefinition> chords,
+        Dictionary<string, KeyGesture> gestures,
+        Dictionary<string, Wheel> appWheels,
+        Dictionary<string, AppVoiceConfig> appVoice)
     {
         using var doc = LoadJson(file);
         if (!doc.RootElement.TryGetProperty("match", out var match) ||
@@ -130,6 +139,62 @@ public sealed class ProfileManager : IDisposable
 
         foreach (var name in names)
             ParseBindings(doc.RootElement, appContext: name, chords, gestures, file);
+
+        if (doc.RootElement.TryGetProperty("wheel", out var wheelProp) &&
+            wheelProp.ValueKind == JsonValueKind.Object)
+        {
+            var wheel = ParseWheelObject(wheelProp, gestures, $"{Path.GetFileName(file)} wheel");
+            foreach (var name in names) appWheels[name] = wheel;
+        }
+
+        var voice = AppVoiceConfig.Empty;
+        if (doc.RootElement.TryGetProperty("voice", out var voiceProp) &&
+            voiceProp.ValueKind == JsonValueKind.Object)
+        {
+            voice = ParseAppVoice(voiceProp, Path.GetFileName(file));
+        }
+        foreach (var name in names) appVoice[name] = voice;
+    }
+
+    private static Wheel ParseWheelObject(JsonElement wheelProp, Dictionary<string, KeyGesture> gestures, string context)
+    {
+        var name = wheelProp.TryGetProperty("name", out var nameProp)
+            ? nameProp.GetString() ?? "Wheel"
+            : "Wheel";
+
+        if (!wheelProp.TryGetProperty("slots", out var slotsProp) ||
+            slotsProp.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException($"{context} '{name}' needs a slots array");
+        }
+
+        var slots = new List<WheelSlot>();
+        foreach (var slotProp in slotsProp.EnumerateArray())
+        {
+            if (!slotProp.TryGetProperty("label", out var labelProp))
+                throw new InvalidOperationException($"{context} '{name}' has a slot without a label");
+            var (actionId, _) = ParseActionValue(slotProp, gestures, $"{context} '{name}' slot '{labelProp.GetString()}'");
+            slots.Add(new WheelSlot(labelProp.GetString()!, actionId));
+        }
+        return new Wheel(name, slots);
+    }
+
+    private static AppVoiceConfig ParseAppVoice(JsonElement voiceProp, string shortName)
+    {
+        string? submitKey = null;
+        if (voiceProp.TryGetProperty("submitKey", out var submitProp))
+            submitKey = submitProp.GetString();
+
+        var dictionary = new List<string>();
+        if (voiceProp.TryGetProperty("dictionary", out var dictProp))
+        {
+            if (dictProp.ValueKind != JsonValueKind.Array)
+                throw new InvalidOperationException($"{shortName}: voice.dictionary must be an array");
+            foreach (var e in dictProp.EnumerateArray())
+                if (e.GetString() is string w && !string.IsNullOrWhiteSpace(w))
+                    dictionary.Add(w);
+        }
+        return new AppVoiceConfig(submitKey, dictionary);
     }
 
     private void ParseFile(string file, string? appContext, List<ChordDefinition> chords, Dictionary<string, KeyGesture> gestures)
@@ -236,7 +301,11 @@ public sealed class ProfileManager : IDisposable
         if (!KeyGesture.TryParse(hotkeyText, out var hotkey, out var error) || hotkey is null)
             throw new InvalidOperationException($"voice.hotkey: {error}");
 
-        return new VoiceConfig(hotkey);
+        string? server = null;
+        if (voiceProp.TryGetProperty("server", out var serverProp))
+            server = serverProp.GetString();
+
+        return new VoiceConfig(hotkey, server);
     }
 
     private static List<Wheel> ParseWheels(string globalFile, Dictionary<string, KeyGesture> gestures)
@@ -251,30 +320,7 @@ public sealed class ProfileManager : IDisposable
         }
 
         foreach (var wheelProp in wheelsProp.EnumerateArray())
-        {
-            var name = wheelProp.TryGetProperty("name", out var nameProp)
-                ? nameProp.GetString() ?? "Wheel"
-                : "Wheel";
-
-            if (!wheelProp.TryGetProperty("slots", out var slotsProp) ||
-                slotsProp.ValueKind != JsonValueKind.Array)
-            {
-                throw new InvalidOperationException($"wheel '{name}' needs a slots array");
-            }
-
-            var slots = new List<WheelSlot>();
-            foreach (var slotProp in slotsProp.EnumerateArray())
-            {
-                if (!slotProp.TryGetProperty("label", out var labelProp))
-                    throw new InvalidOperationException($"wheel '{name}' has a slot without a label");
-                var (actionId, _) = ParseActionValue(slotProp, gestures, $"wheel '{name}' slot '{labelProp.GetString()}'");
-                slots.Add(new WheelSlot(labelProp.GetString()!, actionId));
-            }
-
-            // Wheel slots carry label+action in one object; ParseActionValue
-            // reads "key"/"action" members and ignores "label"/"mode".
-            wheels.Add(new Wheel(name, slots));
-        }
+            wheels.Add(ParseWheelObject(wheelProp, gestures, "wheel"));
 
         return wheels;
     }
@@ -291,6 +337,18 @@ public sealed class ProfileManager : IDisposable
 
     /// <summary>Voice bridge settings (PRD §25).</summary>
     public VoiceConfig Voice => _voice;
+
+    private Dictionary<string, Wheel> _appWheels =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private Dictionary<string, AppVoiceConfig> _appVoice =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per-app wheel 2, keyed by process name (spec §5.9, M7).</summary>
+    public IReadOnlyDictionary<string, Wheel> AppWheels => _appWheels;
+
+    /// <summary>Per-app voice settings, keyed by process name (M7).</summary>
+    public IReadOnlyDictionary<string, AppVoiceConfig> AppVoice => _appVoice;
 
     /// <summary>Raw gestures materialized at load time, consumed by Program dispatch.</summary>
     public IReadOnlyDictionary<string, KeyGesture> GestureActions => _gestures;

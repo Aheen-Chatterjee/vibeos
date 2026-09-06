@@ -4,9 +4,10 @@ namespace VibeOS.App.Profiles;
 
 /// <summary>
 /// Voice bridge settings (PRD §25). The hotkey must match the PTT binding
-/// configured inside OpenWhispr.
+/// configured inside OpenWhispr. <see cref="Server"/> is the loopback bridge
+/// URL for dictionary pushes (M7); null leaves dictionaries dormant.
 /// </summary>
-public sealed record VoiceConfig(KeyGesture Hotkey)
+public sealed record VoiceConfig(KeyGesture Hotkey, string? Server = null)
 {
     public static VoiceConfig Default { get; } = CreateDefault();
 

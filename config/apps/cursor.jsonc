@@ -1,0 +1,41 @@
+{
+  // Cursor profile (PRD §22) — mirrors VS Code.
+  "name": "Cursor",
+  "match": {
+    "process": ["Cursor.exe"]
+  },
+  "bindings": {
+    "RB+B": "quick-open",
+    "RB+X": "cmd-palette",
+    "RB+A": "save",
+    "RB+DpadDown": { "key": "CTRL+`" },
+    "RB+DpadUp": { "key": "CTRL+1" },
+    "RB+DpadLeft": { "key": "CTRL+PAGEUP" },
+    "RB+DpadRight": { "key": "CTRL+PAGEDOWN" }
+  },
+  "wheel": {
+    "name": "Cursor",
+    "slots": [
+      { "label": "Quick open", "action": "quick-open" },
+      { "label": "Palette", "action": "cmd-palette" },
+      { "label": "Save", "action": "save" },
+      { "label": "Terminal", "key": "CTRL+`" },
+      { "label": "Find", "action": "find" },
+      { "label": "Undo", "action": "undo" },
+      { "label": "Copy", "action": "copy" },
+      { "label": "Paste", "action": "paste" }
+    ]
+  },
+  "voice": {
+    "dictionary": [
+      "Supabase",
+      "Next.js",
+      "TypeScript",
+      "FastAPI",
+      "PostgreSQL",
+      "Tailwind",
+      "useEffect",
+      "VibeOS"
+    ]
+  }
+}

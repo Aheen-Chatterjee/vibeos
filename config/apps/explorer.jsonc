@@ -1,0 +1,25 @@
+{
+  // Explorer profile: address bar and new folder on top of global chords.
+  "name": "Explorer",
+  "match": {
+    "process": ["explorer.exe"]
+  },
+  "bindings": {
+    "RB+B": { "key": "ALT+D" },
+    "RB+A": { "key": "CTRL+SHIFT+N" },
+    "RB+X": "find"
+  },
+  "wheel": {
+    "name": "Explorer",
+    "slots": [
+      { "label": "Address bar", "key": "ALT+D" },
+      { "label": "New folder", "key": "CTRL+SHIFT+N" },
+      { "label": "Find", "action": "find" },
+      { "label": "Copy", "action": "copy" },
+      { "label": "Paste", "action": "paste" },
+      { "label": "Select all", "action": "select-all" },
+      { "label": "Desktop", "action": "show-desktop" },
+      { "label": "Task view", "action": "task-switch" }
+    ]
+  }
+}

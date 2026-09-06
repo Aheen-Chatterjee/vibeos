@@ -33,6 +33,7 @@ internal static class Program
     private static Action<ushort, ushort, uint>? _rumble;
     private static KeyboardController _keyboard = null!;
     private static KeyboardOverlay _keyboardOverlay = null!;
+    private static DictionaryClient _dict = null!;
 
     private static SystemState _state = SystemState.Active;
     private static long? _masterArmedAt;
@@ -50,11 +51,15 @@ internal static class Program
         var configDir = ResolveConfigDir();
         _profiles = new ProfileManager(configDir, Log);
         _engine = new ChordEngine(_profiles.Chords);
+        _dict = new DictionaryClient(_profiles.Voice.Server, Log);
         _profiles.Reloaded += () =>
         {
             _engine = new ChordEngine(_profiles.Chords);
-            _wheel.SetWheels(_profiles.Wheels);
             _voice?.SetHotkey(_profiles.Voice.Hotkey);
+            _dict.Dispose();
+            _dict = new DictionaryClient(_profiles.Voice.Server, Log);
+            RefreshWheels(_foreground.Current.ProcessName);
+            PushDictionary(_foreground.Current.ProcessName);
             Log($"[VibeOS] Bindings reloaded: {_profiles.Chords.Count} chords.");
         };
         _voice = new VoiceController(
@@ -67,7 +72,13 @@ internal static class Program
         _keyboard = new KeyboardController();
         _keyboardOverlay = new KeyboardOverlay();
         _keyboardOverlay.Start();
-        _foreground.Changed += app => Log($"[VibeOS] Profile: {app.ProcessName}");
+        _foreground.Changed += app =>
+        {
+            Log($"[VibeOS] Profile: {app.ProcessName}");
+            RefreshWheels(app.ProcessName);
+            PushDictionary(app.ProcessName);
+        };
+        RefreshWheels(_foreground.Current.ProcessName);
 
         // Safety wiring (PRD §47): every path that could strand a held input.
         AppDomain.CurrentDomain.UnhandledException += (_, _) => PanicRelease("unhandled exception");
@@ -163,7 +174,7 @@ internal static class Program
         Console.WriteLine("  LB+RB hold : radial wheel            RB+D-pad : prev/next tab");
         Console.WriteLine("  Y hold     : voice dictate (B cancels) RB+Y hold: voice+submit");
         Console.WriteLine("  D-pad up hold : virtual keyboard");
-        Console.WriteLine("  A / B      : Enter / Escape          RB+D-pad : prev/next tab");
+        Console.WriteLine("  A / B      : Enter / Escape");
         Console.WriteLine();
         Console.WriteLine("[VibeOS] Active. Hold L3+R3 for 1s to suspend. Ctrl+C to quit.");
     }
@@ -251,6 +262,35 @@ internal static class Program
             var hit = _engine.Resolve(current.Pressed, b, ActivationMode.Hold, app);
             if (hit is not null) DispatchAction(hit.ActionId);
         }
+    }
+
+    /// <summary>
+    /// Wheel 2 is the active app's wheel (spec §5.9); anything else falls back
+    /// to the global set, and an empty wheel falls back to wheel 1.
+    /// </summary>
+    private static void RefreshWheels(string processName)
+    {
+        var globals = _profiles.Wheels;
+        if (globals.Count == 0)
+        {
+            _wheel.SetWheels(_profiles.AppWheels.TryGetValue(processName, out var only)
+                ? new[] { only }
+                : Array.Empty<Wheel>());
+            return;
+        }
+
+        _wheel.SetWheels(_profiles.AppWheels.TryGetValue(processName, out var appWheel)
+            ? new[] { globals[0], appWheel, globals[^1] }
+            : globals);
+    }
+
+    /// <summary>Pushes the newly focused app's voice dictionary (M7, PRD §31).</summary>
+    private static void PushDictionary(string processName)
+    {
+        var words = _profiles.AppVoice.TryGetValue(processName, out var voice)
+            ? voice.Dictionary
+            : (IReadOnlyList<string>)Array.Empty<string>();
+        _dict.SwitchTo(words);
     }
 
     private static void DispatchAction(string actionId)

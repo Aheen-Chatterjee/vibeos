@@ -1,0 +1,28 @@
+{
+  // Chromium browser profile (PRD §21). Global LB/RB edit chords inherit;
+  // only browser-specific bindings live here.
+  "name": "Chrome",
+  "match": {
+    "process": ["chrome.exe"]
+  },
+  "bindings": {
+    "RB+DpadRight": "next-tab",
+    "RB+DpadLeft": "prev-tab",
+    "RB+B": "address-bar",
+    "RB+X": "find",
+    "RB+A": "new-tab"
+  },
+  "wheel": {
+    "name": "Chrome",
+    "slots": [
+      { "label": "New tab", "action": "new-tab" },
+      { "label": "Reopen tab", "action": "reopen-tab" },
+      { "label": "Address bar", "action": "address-bar" },
+      { "label": "Find", "action": "find" },
+      { "label": "Next tab", "action": "next-tab" },
+      { "label": "Prev tab", "action": "prev-tab" },
+      { "label": "Copy", "action": "copy" },
+      { "label": "Paste", "action": "paste" }
+    ]
+  }
+}

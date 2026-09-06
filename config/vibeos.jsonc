@@ -18,7 +18,7 @@
   // configured inside OpenWhispr. Y-down synthesizes it at 0 ms.
   "voice": {
     "hotkey": "CTRL+SHIFT+F11"
-  }
+  },
 
   // NOTE — XAML apps (Windows Terminal, Settings, Store) consume the pad
   // natively: Windows translates sticks/buttons into VK_GAMEPAD_* keys and
